@@ -131,7 +131,7 @@ async def schedule_wake(
     intent: str = "check_in",
     source: str = "manual",
 ) -> dict[str, Any]:
-    prefs = load_defaults()
+    prefs = load_prefs()
     src = source if source in ("manual", "auto") else "manual"
 
     if not proactive_on(prefs):
@@ -179,7 +179,7 @@ async def cancel_pending_auto(user_id: str | None = None) -> int:
 
 async def ensure_auto_wake(user_id: str | None = None) -> dict[str, Any]:
     uid = user_id or settings.user_id
-    prefs = load_defaults()
+    prefs = load_prefs()
     await cancel_pending_auto(uid)
 
     if not proactive_on(prefs):
