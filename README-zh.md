@@ -56,7 +56,7 @@ LLM_API_KEY=你的key
 docker compose up --build
 ```
 
-第一次会拉镜像、装依赖，可能要一两分钟。看到 uvicorn / 容器在跑、没有立刻退出即可。
+第一次会拉镜像、装依赖，可能要一两分钟。看到容器在跑、没有立刻退出即可。
 
 ### 4. 在本机浏览器打开
 
@@ -80,65 +80,82 @@ docker compose down
 
 ---
 
-## 用手机聊
+## 手机怎么连
 
-服务跑在**电脑**上。手机里的 `localhost` 指手机自己，所以电脑上的页面手机打不开——要用局域网或隧道。
+服务跑在**电脑**上。手机里的 `localhost` 指手机自己。下面按场景选：
 
-**安全提醒：** 当前没有登录。谁能打开页面，谁就能聊、并消耗你的 API Key。链接不要发群；用完关掉隧道。
+| | 场景 | 要不要公网 |
+|---|---|---|
+| **1A** | Tailscale：电脑一直开着，出门也能聊 | 否（虚拟局域网） |
+| **1B** | 同一 Wi‑Fi，不出家门 | 否 |
+| **2** | 临时公网隧道 | 是（有链接的人都能进） |
+| **3** | 自己部署云服务器 | 是（正式托管，以后做） |
 
-### 方法 1：同一 Wi‑Fi（最快，不出家门）
+**安全：** 当前没有登录。谁打开页面，谁就能聊并烧你的 API Key。
 
-1. 电脑上保持 `docker compose up` 在跑，且本机 `http://localhost:8787` 能打开。
-2. 查电脑的局域网 IP：
-   - Mac 终端：`ipconfig getifaddr en0`（Wi‑Fi 常见是 `en0`；不行再试 `en1`）
-   - 或「系统设置 → 网络 → Wi‑Fi → 详细信息」里看 IP
+### 1. 用「电脑的局域网 / 虚拟局域网 IP」访问
+
+电脑上保持 `docker compose up`，本机先确认 `http://localhost:8787` 能开。然后在手机浏览器打开：
+
+`http://<电脑的IP>:8787`
+
+#### 1A. Tailscale（推荐：出门也能聊）
+
+思路：手机和电脑都加入 Tailscale，相当于始终在一个虚拟局域网里；用电脑的 **Tailscale IP**（一般是 `100.x.x.x`）访问 `8787`。电脑要保持开机并跑着 nostos。
+
+1. 电脑和手机都安装 [Tailscale](https://tailscale.com/)，用**同一个账号**登录并连上。
+2. 在电脑上查看 Tailscale IP：  
+   - Mac 菜单栏 Tailscale 图标，或终端：`tailscale ip -4`  
+   - 形如 `100.86.12.34`
+3. 手机浏览器打开：`http://100.86.12.34:8787`（换成你的 Tailscale IP）。  
+   若开了 MagicDNS，也可用电脑的 Tailscale 主机名，同样加 `:8787`。
+4. **手机缺点：** 很多环境下 **Tailscale 和「梯子」不能同时用**（都要抢 VPN 通道）。出门若必须挂梯子，手机上就会别扭。  
+5. **Mac 可以同时用梯子：** Tailscale → **Settings**，关掉 **Use Tailscale DNS settings**（不要让 Tailscale 接管 DNS），再按你的习惯连系统代理 / 梯子。
+
+#### 1B. 同一 Wi‑Fi（最简单，不出家门）
+
+1. 手机和电脑连**同一 Wi‑Fi**（不要用访客网络；部分路由的 AP 隔离会导致互通失败）。
+2. 查电脑局域网 IP：  
+   - Mac：`ipconfig getifaddr en0`（不行再试 `en1`），或「系统设置 → 网络」  
    - 形如 `192.168.1.23`
-3. 手机连**同一 Wi‑Fi**（不要用「访客网络」；部分路由开了 AP 隔离会导致互通失败）。
-4. 手机浏览器打开：`http://192.168.1.23:8787`（换成你的 IP）。
-5. 若打不开：检查 Mac「防火墙」是否拦了 Docker；确认端口是 `8787`；确认 IP 没抄错。
+3. 手机打开：`http://192.168.1.23:8787`。
+4. 打不开时：查防火墙是否拦 8787、IP 是否抄错、是否真在同一网段。
 
-### 方法 2：隧道（人不在同一网络也能聊）
+### 2. 开一个临时公网隧道
 
-电脑本地照常跑 nostos，再用隧道生成一个 **https** 链接给手机。
+适合：临时演示、或不想装 Tailscale。会得到一个 **https** 链接；**有链接约等于有钥匙**，用完关掉，别发群。
 
-临时试用优先 **cloudflared**（步骤更少，可不注册）。需要账号面板、固定玩法时再用 ngrok。
+临时试用优先 **2A cloudflared**（步骤少，可不注册）。已有 ngrok 账号再用 **2B**。
 
-#### 2A. cloudflared 临时隧道（推荐先试）
+#### 2A. cloudflared
 
-1. 安装（Mac）：
-   ```bash
-   brew install cloudflare/cloudflare/cloudflared
-   ```
-2. 确认 nostos 已在跑（`localhost:8787` 可打开）。
-3. **另开一个终端**执行：
-   ```bash
-   cloudflared tunnel --url http://localhost:8787
-   ```
-4. 终端里会出现类似 `https://xxxx.trycloudflare.com` 的地址——整段复制。
-5. 手机浏览器打开该 https 链接即可（不要求同一 Wi‑Fi）。
-6. 用完在 cloudflared 那个终端按 `Ctrl+C`；链接立刻失效。
+```bash
+brew install cloudflare/cloudflare/cloudflared
+# nostos 已在 :8787 运行
+cloudflared tunnel --url http://localhost:8787
+```
 
-#### 2B. ngrok（备选）
+把终端打印的 `https://….trycloudflare.com` 在手机打开。用完 `Ctrl+C`。
 
-适合：已经有 ngrok 账号、或更习惯它的 Dashboard / 文档生态。免费试用要注册，步骤比 cloudflared 临时隧道多一步。
+#### 2B. ngrok
 
-1. 打开 https://ngrok.com/ 注册，在 Dashboard 复制 **Authtoken**。
-2. 安装：`brew install ngrok/ngrok/ngrok`
-3. 一次性配置：
-   ```bash
-   ngrok config add-authtoken <你的token>
-   ```
-4. nostos 在跑时，另开终端：
-   ```bash
-   ngrok http 8787
-   ```
-5. 复制 `Forwarding` 里的 `https://….ngrok-free.app`，手机打开。免费版可能有中间提示页，点继续即可。
-6. 用完 `Ctrl+C`。
+```bash
+brew install ngrok/ngrok/ngrok
+ngrok config add-authtoken <token>   # 一次性，来自 https://ngrok.com/ dashboard
+ngrok http 8787
+```
+
+复制 `Forwarding` 的 `https://…` 用手机打开。免费版可能有提示页。用完 `Ctrl+C`。
 
 #### 不要做的事
 
-- 不要把家里路由器把 `8787` 直接映射到公网（没有鉴权）。
-- 不要把隧道链接发到公开群。
+不要把家里路由器把 `8787` 裸端口映射到公网（没有鉴权）。
+
+### 3. 自己部署云服务器（以后）
+
+把 nostos 跑到 VPS / 云主机，配域名和 HTTPS，手机浏览器直接打开——这是「打开就用」的正道，也对应产品里的托管网页。
+
+**当前仓库还没提供一键云部署。** 等最小可聊稳了再补（Docker 镜像、反向代理、可选 token 链接等）。在那之前用 **1A / 1B / 2**。
 
 ---
 
@@ -151,7 +168,7 @@ docker compose down
 
 ## 还没做
 
-- 记忆 md / 召回、preferences、闹钟、nostools、SSE 流式、多用户鉴权
+- 记忆 md / 召回、preferences、闹钟、nostools、SSE 流式、多用户鉴权、云一键部署
 
 ## 不用 Docker 时（可选）
 
@@ -161,7 +178,6 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cd ..
 export PYTHONPATH=server DATA_DIR=./data
-# 自行保证 LLM_API_KEY 等在环境里，或从项目根目录加载 .env
 uvicorn app.main:app --app-dir server --reload --port 8787
 ```
 

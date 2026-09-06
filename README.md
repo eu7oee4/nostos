@@ -4,63 +4,41 @@
 
 **中文说明（更详细）：[README-zh.md](README-zh.md)**
 
-**Companion, not assistant.** Stage: **min-chat** — talk in a loop. No long-term memory, no proactive reach-out, no nostools yet.
+**Companion, not assistant.** Stage: **min-chat**. No long-term memory, proactive reach-out, or nostools yet.
 
 ## Quick start (computer)
 
 ```bash
 git clone https://github.com/eu7oee4/nostos.git
 cd nostos
-git fetch origin && git checkout feat/min-chat-loop   # until merged to main
+git fetch origin && git checkout feat/min-chat-loop   # until merged
 cp .env.example .env   # set LLM_API_KEY
 docker compose up --build
 ```
 
-Open **http://localhost:8787** or **http://127.0.0.1:8787** (not `www.localhost.com`). Health: `/health`.
+Open **http://localhost:8787** or **http://127.0.0.1:8787** (not `www.localhost.com`).
+
+Full step-by-step: **README-zh.md**.
 
 ## Phone access
 
-The server runs on your computer. On a phone, `localhost` is the phone — use LAN or a tunnel. **No auth yet**; treat public links as keys.
+Server runs on your computer. Pick by scenario:
 
-### 1. Same Wi‑Fi
+1. **Reach the computer’s IP** (no public internet required)  
+   - **1A Tailscale** — leave the Mac running; chat away from home via `http://<tailscale-ip>:8787`. On phones, Tailscale often conflicts with other VPNs/proxies; on Mac you can usually keep a proxy if you turn off **Use Tailscale DNS settings**.  
+   - **1B Same Wi‑Fi** — simplest at home: `http://<LAN-IP>:8787`.
 
-1. Keep compose running; confirm `http://localhost:8787` works on the computer.
-2. Find the LAN IP (Mac: `ipconfig getifaddr en0`).
-3. On the phone (same Wi‑Fi, not guest): `http://<LAN-IP>:8787`.
+2. **Temporary public tunnel** (link = key; no auth yet)  
+   - **2A cloudflared** (preferred for a quick try): `cloudflared tunnel --url http://localhost:8787`  
+   - **2B ngrok**: `ngrok http 8787`
 
-### 2. Tunnel
-
-Prefer **cloudflared quick tunnel** for a one-off try (fewer steps, no signup). Use **ngrok** if you already have an account / want its dashboard.
-
-**cloudflared:**
-
-```bash
-brew install cloudflare/cloudflare/cloudflared
-# nostos already on :8787
-cloudflared tunnel --url http://localhost:8787
-# open the printed https://….trycloudflare.com on your phone
-```
-
-**ngrok:**
-
-```bash
-brew install ngrok/ngrok/ngrok
-ngrok config add-authtoken <token>   # once, from ngrok dashboard
-ngrok http 8787
-```
+3. **Deploy your own cloud server** — the real “open and use” path; **not shipped yet**.
 
 Do not raw-port-forward 8787 to the open internet.
 
-See **README-zh.md** for full step-by-step (Chinese).
+## What works / not yet
 
-## What works (min-chat)
-
-- `GET /health` / `GET /messages` / `POST /chat`
-- SQLite at `data/nostos.sqlite`
-
-## Not yet
-
-Memory, preferences, alarms, nostools, SSE, multi-user auth.
+See README-zh.md.
 
 ## Docs
 
