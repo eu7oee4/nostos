@@ -2,34 +2,46 @@
 
 > 暂定名。AI 伙伴：记得你，也会来找你。自托管 / BYOK。
 
-**Companion, not assistant.** MVP proves whether people stay because it *remembers* and *reaches out* — not because chat is fun.
+**Companion, not assistant.** This branch stage: **min-chat** — talk in a loop. No long-term memory, no proactive reach-out, no nostools yet.
 
 ## Quick start
 
 ```bash
 git clone https://github.com/eu7oee4/nostos.git
 cd nostos
-cp .env.example .env   # set LLM_API_KEY
-docker compose up
+cp .env.example .env   # set LLM_API_KEY (DeepSeek by default)
+docker compose up --build
 ```
 
-Then open http://localhost:8787/health (scaffold: health only for now).
+Open http://localhost:8787 — type and send. Health: http://localhost:8787/health
 
-## Layout
+Without Docker:
 
-| Path | Role |
-|------|------|
-| `server/` | FastAPI + SQLite + scheduler |
-| `server/app/nostools/` | Antenna layer registry (暂定名; not a plugin store) |
-| `web/` | Minimal static UI placeholder |
-| `docs/` | PLAN + architecture |
-| `eval/` | Model-selection eval (later) |
-| `data/` | Runtime: sqlite + memories (gitignored) |
+```bash
+cd server
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cd ..
+export PYTHONPATH=server DATA_DIR=./data
+# load .env yourself or export LLM_API_KEY
+uvicorn app.main:app --app-dir server --reload --port 8787
+```
+
+## What works (min-chat)
+
+- `GET /health`
+- `GET /messages` — history for `USER_ID` (default `local`)
+- `POST /chat` `{"content":"..."}` — persist user turn → call LLM → persist assistant turn
+- SQLite at `data/nostos.sqlite`, server-stamped timestamps
+
+## Not yet
+
+- Memory md / recall, preferences, alarms, nostools, SSE streaming, multi-user auth
 
 ## Docs
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — locked decisions
-- [PLAN_companion.md](docs/PLAN_companion.md) — design (from cassette)
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [PLAN_companion.md](docs/PLAN_companion.md) (link to cassette until full copy lands)
 
 ## License
 
