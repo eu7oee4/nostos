@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from app import db
@@ -11,6 +12,9 @@ from app.config import settings
 from app.llm import chat_completion
 from app.memory import recall_text
 from app.nostools.registry import registry
+from app.schedule.scheduler import ensure_auto_wake
+
+log = logging.getLogger("nostos.chat")
 
 CHAT_TOOL_NAMES = [
     "memory_list",
@@ -29,7 +33,7 @@ SYSTEM_PROMPT = (
     "需要核对细节时用 memory_read / memory_list。\n"
     "你可以预约主动来找用户：wake_set（测试可用 delay_seconds；"
     "可带 note 写死台词，或只带 intent 到点再生成）。"
-    "wake_list / wake_cancel 查看或取消。主动触达需服务开启 PROACTIVE_ENABLED。\n"
+    "wake_list / wake_cancel 查看或取消。主动触达需在设置里开启 proactive。\n"
     "不要把工具过程念给用户听；不要编造未写入的记忆。"
     "闲聊不必强行写记忆或设 wake。"
 )
@@ -62,6 +66,14 @@ def _parse_args(raw: str | dict[str, Any] | None) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+async def _maybe_rearm_auto(uid: str) -> None:
+    """After chat, re-date-arm next auto wake (recent_chat cool-down changes)."""
+    try:
+        await ensure_auto_wake(uid)
+    except Exception as e:  # noqa: BLE001 — never break chat
+        log.warning("ensure_auto_wake after chat failed: %s", e)
 
 
 async def run_chat(user_text: str) -> dict[str, Any]:
@@ -119,6 +131,7 @@ async def run_chat(user_text: str) -> dict[str, Any]:
 
         reply = (msg.get("content") or "").strip()
         assistant = await db.add_message(uid, "assistant", reply)
+        await _maybe_rearm_auto(uid)
         return {
             "user_id": uid,
             "message": assistant,
@@ -129,6 +142,7 @@ async def run_chat(user_text: str) -> dict[str, Any]:
     msg = await chat_completion(messages, tools=None)
     reply = (msg.get("content") or "").strip() or "（这轮工具次数用尽了，再说一次试试）"
     assistant = await db.add_message(uid, "assistant", reply)
+    await _maybe_rearm_auto(uid)
     return {
         "user_id": uid,
         "message": assistant,
