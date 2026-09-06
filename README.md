@@ -2,73 +2,70 @@
 
 > Tentative name. An AI companion that remembers you and reaches out. Self-hosted / BYOK.
 
-**中文说明：[README-zh.md](README-zh.md)**
+**中文说明（更详细）：[README-zh.md](README-zh.md)**
 
-**Companion, not assistant.** This branch stage: **min-chat** — talk in a loop. No long-term memory, no proactive reach-out, no nostools yet.
+**Companion, not assistant.** Stage: **min-chat** — talk in a loop. No long-term memory, no proactive reach-out, no nostools yet.
 
-## Quick start
+## Quick start (computer)
 
 ```bash
 git clone https://github.com/eu7oee4/nostos.git
 cd nostos
-git checkout feat/min-chat-loop   # until merged
-cp .env.example .env   # set LLM_API_KEY (DeepSeek by default)
+git fetch origin && git checkout feat/min-chat-loop   # until merged to main
+cp .env.example .env   # set LLM_API_KEY
 docker compose up --build
 ```
 
-On this machine open **http://localhost:8787** (not `www.localhost.com`). Health: http://localhost:8787/health
+Open **http://localhost:8787** or **http://127.0.0.1:8787** (not `www.localhost.com`). Health: `/health`.
 
-Without Docker:
+## Phone access
+
+The server runs on your computer. On a phone, `localhost` is the phone — use LAN or a tunnel. **No auth yet**; treat public links as keys.
+
+### 1. Same Wi‑Fi
+
+1. Keep compose running; confirm `http://localhost:8787` works on the computer.
+2. Find the LAN IP (Mac: `ipconfig getifaddr en0`).
+3. On the phone (same Wi‑Fi, not guest): `http://<LAN-IP>:8787`.
+
+### 2. Tunnel
+
+Prefer **cloudflared quick tunnel** for a one-off try (fewer steps, no signup). Use **ngrok** if you already have an account / want its dashboard.
+
+**cloudflared:**
 
 ```bash
-cd server
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cd ..
-export PYTHONPATH=server DATA_DIR=./data
-# load .env yourself or export LLM_API_KEY
-uvicorn app.main:app --app-dir server --reload --port 8787
+brew install cloudflare/cloudflare/cloudflared
+# nostos already on :8787
+cloudflared tunnel --url http://localhost:8787
+# open the printed https://….trycloudflare.com on your phone
 ```
 
-## Chat from your phone
+**ngrok:**
 
-The server runs on your computer. On a phone, `localhost` means the phone itself — use one of these instead.
+```bash
+brew install ngrok/ngrok/ngrok
+ngrok config add-authtoken <token>   # once, from ngrok dashboard
+ngrok http 8787
+```
 
-### 1. Same Wi‑Fi (quickest)
+Do not raw-port-forward 8787 to the open internet.
 
-1. Keep `docker compose up` running on the computer.
-2. Find the computer’s LAN IP (examples: Mac `ipconfig getifaddr en0`, or System Settings → Network).
-3. On the phone browser open `http://<LAN-IP>:8787` (e.g. `http://192.168.1.23:8787`).
-
-Tips: phone and computer must be on the same Wi‑Fi (not guest/AP isolation). If it fails, check the Mac firewall allowing Docker/Python on port 8787. **Only for trusted networks** — there is no login yet.
-
-### 2. Tunnel (different network)
-
-Keep the app running locally, then expose it with a tunnel and open the HTTPS URL on your phone:
-
-- [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) (`cloudflared tunnel ...`)
-- [ngrok](https://ngrok.com/) (`ngrok http 8787`)
-- [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) if you already use Tailscale
-
-Treat the public link like a house key — don’t share it. Still no auth in min-chat.
-
-Do **not** port-forward 8787 to the open internet without protection.
+See **README-zh.md** for full step-by-step (Chinese).
 
 ## What works (min-chat)
 
-- `GET /health`
-- `GET /messages` — history for `USER_ID` (default `local`)
-- `POST /chat` `{"content":"..."}` — persist user turn → call LLM → persist assistant turn
-- SQLite at `data/nostos.sqlite`, server-stamped timestamps
+- `GET /health` / `GET /messages` / `POST /chat`
+- SQLite at `data/nostos.sqlite`
 
 ## Not yet
 
-- Memory md / recall, preferences, alarms, nostools, SSE streaming, multi-user auth
+Memory, preferences, alarms, nostools, SSE, multi-user auth.
 
 ## Docs
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [PLAN_companion.md](docs/PLAN_companion.md) (link to cassette until full copy lands)
+- [PLAN_companion.md](docs/PLAN_companion.md)
 
 ## License
 
