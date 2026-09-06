@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-import aiosqlite
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
+
+import aiosqlite
 
 from app.config import settings
 
@@ -48,17 +50,21 @@ async def init_db() -> None:
         await conn.commit()
 
 
-async def _connect() -> aiosqlite.Connection:
-    """Open DB and ensure schema (survives wipe while process is up)."""
+@asynccontextmanager
+async def _connect() -> AsyncIterator[aiosqlite.Connection]:
+    """Open DB once, ensure schema, close on exit (survives wipe while up)."""
     conn = await aiosqlite.connect(db_path())
     conn.row_factory = aiosqlite.Row
-    await conn.executescript(SCHEMA)
-    await conn.commit()
-    return conn
+    try:
+        await conn.executescript(SCHEMA)
+        await conn.commit()
+        yield conn
+    finally:
+        await conn.close()
 
 
 async def add_message(user_id: str, role: str, content: str) -> dict[str, Any]:
-    async with await _connect() as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "INSERT INTO messages (user_id, role, content) VALUES (?, ?, ?)",
             (user_id, role, content),
@@ -74,7 +80,7 @@ async def add_message(user_id: str, role: str, content: str) -> dict[str, Any]:
 
 
 async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
-    async with await _connect() as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "SELECT id, user_id, role, content, created_at FROM messages "
             "WHERE user_id = ? ORDER BY id ASC LIMIT ?",
@@ -100,7 +106,7 @@ async def create_wake(
     note: str | None = None,
     intent: str = "check_in",
 ) -> dict[str, Any]:
-    async with await _connect() as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "INSERT INTO wakes (user_id, wake_at, note, intent, status) "
             "VALUES (?, ?, ?, ?, 'pending')",
@@ -118,7 +124,7 @@ async def create_wake(
 
 
 async def get_wake(wake_id: int) -> dict[str, Any] | None:
-    async with await _connect() as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "SELECT id, user_id, wake_at, note, intent, status, created_at, fired_at "
             "FROM wakes WHERE id = ?",
@@ -134,7 +140,7 @@ async def list_wakes(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 200))
-    async with await _connect() as conn:
+    async with _connect() as conn:
         if status:
             cur = await conn.execute(
                 "SELECT id, user_id, wake_at, note, intent, status, created_at, fired_at "
@@ -153,7 +159,7 @@ async def list_wakes(
 
 
 async def mark_wake_fired(wake_id: int) -> None:
-    async with await _connect() as conn:
+    async with _connect() as conn:
         await conn.execute(
             "UPDATE wakes SET status = 'fired', "
             "fired_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
@@ -163,7 +169,7 @@ async def mark_wake_fired(wake_id: int) -> None:
 
 
 async def mark_wake_cancelled(wake_id: int) -> bool:
-    async with await _connect() as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "UPDATE wakes SET status = 'cancelled' "
             "WHERE id = ? AND status = 'pending'",
@@ -175,7 +181,7 @@ async def mark_wake_cancelled(wake_id: int) -> bool:
 
 async def count_pending_wakes(user_id: str | None = None) -> int:
     uid = user_id or settings.user_id
-    async with await _connect() as conn:
+    async with _connect() as conn:
         cur = await conn.execute(
             "SELECT COUNT(*) AS n FROM wakes WHERE user_id = ? AND status = 'pending'",
             (uid,),
