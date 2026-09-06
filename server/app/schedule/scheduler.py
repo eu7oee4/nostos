@@ -67,9 +67,8 @@ def _arm_in_scheduler(wake_id: int, when: datetime) -> None:
 def disarm_wake(wake_id: int) -> None:
     if _scheduler is None:
         return
-    key = _wake_key(wake_id)
     try:
-        _scheduler.remove_job(key)
+        _scheduler.remove_job(_wake_key(wake_id))
     except Exception:  # noqa: BLE001
         pass
 
@@ -93,10 +92,7 @@ async def fire_wake(wake_id: int) -> None:
 
     note = (row.get("note") or "").strip()
     intent = (row.get("intent") or "check_in").strip()
-    if note:
-        text = note
-    else:
-        text = await _generate_wake_line(uid, intent)
+    text = note if note else await _generate_wake_line(uid, intent)
 
     await db.add_message(uid, "assistant", text)
     await db.mark_wake_fired(wake_id)
@@ -135,20 +131,14 @@ async def schedule_wake(
     intent: str = "check_in",
     source: str = "manual",
 ) -> dict[str, Any]:
-    """Arm a wake. Manual ignores random policy; auto is for the policy engine."""
-    prefs = load_prefs()
+    prefs = load_defaults()
     src = source if source in ("manual", "auto") else "manual"
 
-    if src == "manual" and not proactive_on(prefs) and not settings.proactive_enabled:
-        # Allow manual if either prefs or env says on; prefer prefs
-        if not proactive_on(prefs):
-            return {
-                "ok": False,
-                "detail": "proactive wakes are off — enable in Settings or PROACTIVE_ENABLED",
-            }
-
-    if src == "auto" and not proactive_on(prefs):
-        return {"ok": False, "detail": "proactive disabled"}
+    if not proactive_on(prefs):
+        return {
+            "ok": False,
+            "detail": "proactive wakes are off — enable in Settings",
+        }
 
     if _scheduler is None or not _scheduler.running:
         return {"ok": False, "detail": "wake scheduler not running"}
@@ -188,9 +178,8 @@ async def cancel_pending_auto(user_id: str | None = None) -> int:
 
 
 async def ensure_auto_wake(user_id: str | None = None) -> dict[str, Any]:
-    """Cancel pending auto wakes and arm the next policy-picked wake."""
     uid = user_id or settings.user_id
-    prefs = load_prefs()
+    prefs = load_defaults()
     await cancel_pending_auto(uid)
 
     if not proactive_on(prefs):
@@ -214,7 +203,7 @@ async def ensure_auto_wake(user_id: str | None = None) -> dict[str, Any]:
 
 
 async def restore_pending_wakes() -> int:
-    prefs = load_prefs_safe()
+    prefs = load_defaults()
     if not proactive_on(prefs):
         return 0
     rows = await db.list_wakes(settings.user_id, status="pending", limit=200)
@@ -232,10 +221,6 @@ async def restore_pending_wakes() -> int:
             _arm_in_scheduler(wake_id, when)
             armed += 1
     return armed
-
-
-def load_defaults_safe() -> dict[str, Any]:
-    return load_prefs()
 
 
 async def _policy_patrol() -> None:
@@ -267,7 +252,7 @@ async def start_scheduler() -> None:
         return
     _scheduler = AsyncIOScheduler(timezone=timezone.utc)
     _scheduler.start()
-    prefs = load_prefs_safe()
+    prefs = load_defaults()
     n = await restore_pending_wakes()
     if proactive_on(prefs):
         await ensure_auto_wake(settings.user_id)
@@ -289,7 +274,6 @@ async def stop_scheduler() -> None:
 
 
 async def reload_wake_policy() -> dict[str, Any]:
-    """Call after prefs save: refresh patrol + next auto wake."""
-    prefs = load_prefs_safe()
+    prefs = load_defaults()
     _setup_patrol(prefs)
     return await ensure_auto_wake(settings.user_id)
