@@ -1,0 +1,1 @@
+"""nostos server package (scaffold)."""
