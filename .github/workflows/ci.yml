@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    name: smoke (/health)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r server/requirements.txt
+      - name: Start server and hit /health
+        env:
+          DATA_DIR: ./data
+          LLM_API_KEY: ""
+          USER_ID: local
+        run: |
+          mkdir -p data
+          PYTHONPATH=server uvicorn app.main:app --host 127.0.0.1 --port 8787 &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8787/health | grep -q '"ok": *true'; then
+              echo "health ok"
+              curl -s http://127.0.0.1:8787/health
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "health check timed out"
+          exit 1
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t nostos:ci .
