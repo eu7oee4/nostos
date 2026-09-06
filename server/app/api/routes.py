@@ -4,9 +4,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.chat_loop import run_chat
 from app.config import settings
 from app import db
-from app.llm import LLMError, chat_completion
+from app.llm import LLMError
+from app.memory import list_memories, read_memory
 
 router = APIRouter()
 
@@ -20,10 +22,11 @@ def health():
     return {
         "ok": True,
         "service": "nostos",
-        "stage": "min-chat",
+        "stage": "min-memory",
         "user_id": settings.user_id,
         "model": settings.llm_model,
         "has_key": bool(settings.llm_api_key),
+        "memory_count": len(list_memories(settings.user_id)),
     }
 
 
@@ -33,29 +36,28 @@ async def get_messages(limit: int = 100):
     return {"user_id": settings.user_id, "messages": await db.list_messages(settings.user_id, limit)}
 
 
+@router.get("/memories")
+def get_memories():
+    """List durable memories (markdown files on disk)."""
+    return {"user_id": settings.user_id, "memories": list_memories(settings.user_id)}
+
+
+@router.get("/memories/{name}")
+def get_memory(name: str):
+    got = read_memory(name, settings.user_id)
+    if not got.get("ok"):
+        raise HTTPException(404, got.get("detail") or "not found")
+    return got
+
+
 @router.post("/chat")
 async def chat(body: ChatIn):
     text = body.content.strip()
     if not text:
         raise HTTPException(400, "empty content")
 
-    await db.add_message(settings.user_id, "user", text)
-    history = await db.history_for_llm(settings.user_id, limit=40)
-
-    # Minimal system: companion framing, no tools/memory yet
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是 nostos，用户的 AI 伙伴（不是助手工具箱）。"
-                "说话自然、简短；这是最小可聊版本，还没有长期记忆与主动触达。"
-            ),
-        },
-        *history,
-    ]
-
     try:
-        reply = await chat_completion(messages)
+        return await run_chat(text)
     except LLMError as e:
         code = 502
         if e.status == 401:
@@ -63,6 +65,3 @@ async def chat(body: ChatIn):
         elif 400 <= e.status < 500:
             code = e.status
         return JSONResponse({"detail": str(e), "status": e.status}, status_code=code)
-
-    assistant = await db.add_message(settings.user_id, "assistant", reply or "")
-    return {"user_id": settings.user_id, "message": assistant}

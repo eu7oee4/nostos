@@ -16,7 +16,12 @@ class LLMError(Exception):
         super().__init__(f"LLM HTTP {status}: {body[:500]}")
 
 
-async def chat_completion(messages: list[dict[str, str]]) -> str:
+async def chat_completion(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = "auto",
+) -> dict[str, Any]:
+    """Return the assistant message object (may include tool_calls)."""
     if not settings.llm_api_key:
         raise LLMError(401, "LLM_API_KEY is empty — set it in .env")
 
@@ -27,6 +32,11 @@ async def chat_completion(messages: list[dict[str, str]]) -> str:
         "messages": messages,
         "stream": False,
     }
+    if tools:
+        payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+
     headers = {
         "Authorization": f"Bearer {settings.llm_api_key}",
         "Content-Type": "application/json",
@@ -39,6 +49,6 @@ async def chat_completion(messages: list[dict[str, str]]) -> str:
         data = resp.json()
 
     try:
-        return data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as e:
         raise LLMError(502, f"unexpected response shape: {data!r}") from e

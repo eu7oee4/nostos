@@ -35,9 +35,17 @@ async def init_db() -> None:
         await conn.commit()
 
 
+async def _connect() -> aiosqlite.Connection:
+    """Open DB and ensure schema (survives wipe while process is up)."""
+    conn = await aiosqlite.connect(db_path())
+    conn.row_factory = aiosqlite.Row
+    await conn.executescript(SCHEMA)
+    await conn.commit()
+    return conn
+
+
 async def add_message(user_id: str, role: str, content: str) -> dict[str, Any]:
-    async with aiosqlite.connect(db_path()) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with await _connect() as conn:
         cur = await conn.execute(
             "INSERT INTO messages (user_id, role, content) VALUES (?, ?, ?)",
             (user_id, role, content),
@@ -53,8 +61,7 @@ async def add_message(user_id: str, role: str, content: str) -> dict[str, Any]:
 
 
 async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
-    async with aiosqlite.connect(db_path()) as conn:
-        conn.row_factory = aiosqlite.Row
+    async with await _connect() as conn:
         cur = await conn.execute(
             "SELECT id, user_id, role, content, created_at FROM messages "
             "WHERE user_id = ? ORDER BY id ASC LIMIT ?",
@@ -65,7 +72,7 @@ async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
 
 
 async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]:
-    """Recent turns for the model. No system/memory injection in min-chat."""
+    """Recent turns for the model."""
     msgs = await list_messages(user_id, limit=limit)
     return [
         {"role": m["role"], "content": m["content"]}
