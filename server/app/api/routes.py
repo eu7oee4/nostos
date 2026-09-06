@@ -9,6 +9,7 @@ from app.config import settings
 from app import db
 from app.llm import LLMError
 from app.memory import list_memories, read_memory
+from app.schedule.scheduler import schedule_wake
 
 router = APIRouter()
 
@@ -17,16 +18,25 @@ class ChatIn(BaseModel):
     content: str = Field(min_length=1, max_length=16000)
 
 
+class WakeIn(BaseModel):
+    delay_seconds: float | None = Field(default=None, ge=0)
+    wake_at: str | None = None
+    note: str | None = None
+    intent: str = "check_in"
+
+
 @router.get("/health")
-def health():
+async def health():
     return {
         "ok": True,
         "service": "nostos",
-        "stage": "min-memory",
+        "stage": "min-wake",
         "user_id": settings.user_id,
         "model": settings.llm_model,
         "has_key": bool(settings.llm_api_key),
         "memory_count": len(list_memories(settings.user_id)),
+        "proactive_enabled": settings.proactive_enabled,
+        "pending_wakes": await db.count_pending_wakes(settings.user_id),
     }
 
 
@@ -48,6 +58,29 @@ def get_memory(name: str):
     if not got.get("ok"):
         raise HTTPException(404, got.get("detail") or "not found")
     return got
+
+
+@router.get("/wakes")
+async def get_wakes(status: str | None = "pending"):
+    return {
+        "user_id": settings.user_id,
+        "proactive_enabled": settings.proactive_enabled,
+        "wakes": await db.list_wakes(settings.user_id, status=status),
+    }
+
+
+@router.post("/wakes")
+async def post_wake(body: WakeIn):
+    """Arm a one-shot wake (local test without chatting)."""
+    result = await schedule_wake(
+        delay_seconds=body.delay_seconds,
+        wake_at=body.wake_at,
+        note=body.note,
+        intent=body.intent,
+    )
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("detail") or "wake failed")
+    return result
 
 
 @router.post("/chat")

@@ -53,15 +53,16 @@ class Registry:
 registry = Registry()
 
 
-def _noop(**kwargs: Any) -> dict:
-    return {"ok": False, "detail": "scaffold stub"}
-
-
 def _bootstrap() -> None:
     from app.nostools.memory_tools import (
         memory_list_handler,
         memory_read_handler,
         memory_write_handler,
+    )
+    from app.nostools.wake_tools import (
+        wake_cancel_handler,
+        wake_list_handler,
+        wake_set_handler,
     )
 
     registry.register(
@@ -134,19 +135,71 @@ def _bootstrap() -> None:
     )
     registry.register(
         ToolSpec(
-            name="alarm_set",
-            description="Set an alarm / wake (proactive reach-out primitive)",
+            name="wake_set",
+            description=(
+                "Schedule a proactive wake: nostos will come find the user later "
+                "with an in-app message. Prefer delay_seconds for tests. "
+                "Requires PROACTIVE_ENABLED=true."
+            ),
             builtin=True,
             enabled=True,
             side_effect="write",
             parameters={
                 "type": "object",
                 "properties": {
-                    "when": {"type": "string"},
-                    "note": {"type": "string"},
+                    "delay_seconds": {
+                        "type": "number",
+                        "description": "Seconds from now (good for local tests)",
+                    },
+                    "wake_at": {
+                        "type": "string",
+                        "description": "ISO-8601 UTC time to wake, e.g. 2026-09-07T04:00:00Z",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Optional fixed line; if omitted, generate at wake time",
+                    },
+                    "intent": {
+                        "type": "string",
+                        "description": "Wake intent when note is empty, default check_in",
+                    },
                 },
+                "additionalProperties": False,
             },
-            handler=_noop,
+            handler=wake_set_handler,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="wake_list",
+            description="List pending wakes for the current user.",
+            builtin=True,
+            enabled=True,
+            side_effect="read",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=wake_list_handler,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="wake_cancel",
+            description="Cancel a pending wake by id.",
+            builtin=True,
+            enabled=True,
+            side_effect="write",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "wake_id": {"type": "integer", "description": "Wake id from wake_list"}
+                },
+                "required": ["wake_id"],
+                "additionalProperties": False,
+            },
+            handler=wake_cancel_handler,
         )
     )
 

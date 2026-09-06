@@ -1,23 +1,12 @@
-"""Builtin wake tool handlers."""
+"""Builtin wake tool handlers (async)."""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from app import db
 from app.config import settings
 from app.schedule.scheduler import disarm_wake, schedule_wake
-
-
-def _run(coro: Any) -> Any:
-    """Run async wake helpers from sync tool handlers."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    # Inside running loop (chat request): schedule and wait via future
-    return asyncio.ensure_future(coro)  # type: ignore[return-value]
 
 
 async def wake_set_handler(
@@ -44,7 +33,10 @@ async def wake_list_handler(**_kwargs: Any) -> dict[str, Any]:
     }
 
 
-async def wake_cancel_handler(wake_id: int | str | None = None, **_kwargs: Any) -> dict[str, Any]:
+async def wake_cancel_handler(
+    wake_id: int | str | None = None,
+    **_kwargs: Any,
+) -> dict[str, Any]:
     if wake_id is None:
         return {"ok": False, "detail": "wake_id is required"}
     try:
@@ -54,4 +46,8 @@ async def wake_cancel_handler(wake_id: int | str | None = None, **_kwargs: Any) 
     ok = await db.mark_wake_cancelled(wid)
     if ok:
         disarm_wake(wid)
-    return {"ok": ok, "wake_id": wid, "detail": None if ok else "not found or not pending"}
+    return {
+        "ok": ok,
+        "wake_id": wid,
+        "detail": None if ok else "not found or not pending",
+    }
