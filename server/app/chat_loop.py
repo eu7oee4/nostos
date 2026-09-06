@@ -1,7 +1,8 @@
-"""Min-memory chat: history + recall tail + memory tool_use loop."""
+"""Chat: history + recall + memory/wake tool_use loop."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -11,7 +12,14 @@ from app.llm import chat_completion
 from app.memory import recall_text
 from app.nostools.registry import registry
 
-MEMORY_TOOL_NAMES = ["memory_list", "memory_read", "memory_write"]
+CHAT_TOOL_NAMES = [
+    "memory_list",
+    "memory_read",
+    "memory_write",
+    "wake_set",
+    "wake_list",
+    "wake_cancel",
+]
 MAX_TOOL_ROUNDS = 4
 
 SYSTEM_PROMPT = (
@@ -19,21 +27,24 @@ SYSTEM_PROMPT = (
     "你有长期记忆（markdown 文件）。用户说出值得长期记住的事实时，"
     "用 memory_write 写入（短 id，如 name / hometown / preferences）；"
     "需要核对细节时用 memory_read / memory_list。\n"
+    "你可以预约主动来找用户：wake_set（测试可用 delay_seconds；"
+    "可带 note 写死台词，或只带 intent 到点再生成）。"
+    "wake_list / wake_cancel 查看或取消。主动触达需服务开启 PROACTIVE_ENABLED。\n"
     "不要把工具过程念给用户听；不要编造未写入的记忆。"
-    "闲聊不必强行写记忆。"
+    "闲聊不必强行写记忆或设 wake。"
 )
 
 
-def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     spec = registry.tools.get(name)
     if not spec or not spec.handler:
         return {"ok": False, "detail": f"unknown tool: {name}"}
-    if name not in MEMORY_TOOL_NAMES:
-        return {"ok": False, "detail": f"tool not available in min-memory: {name}"}
+    if name not in CHAT_TOOL_NAMES:
+        return {"ok": False, "detail": f"tool not available: {name}"}
     try:
         result = spec.handler(**arguments)
-        if hasattr(result, "__await__"):
-            raise TypeError("async handlers not supported yet")
+        if asyncio.iscoroutine(result):
+            result = await result
         return result if isinstance(result, dict) else {"ok": True, "result": result}
     except TypeError as e:
         return {"ok": False, "detail": f"bad arguments: {e}"}
@@ -70,15 +81,15 @@ async def run_chat(user_text: str) -> dict[str, Any]:
         },
     ]
 
-    tools = registry.openai_tools(MEMORY_TOOL_NAMES)
+    tools = registry.openai_tools(CHAT_TOOL_NAMES)
     touched: list[str] = []
+    wakes_touched: list[int] = []
 
     for _ in range(MAX_TOOL_ROUNDS):
         msg = await chat_completion(messages, tools=tools, tool_choice="auto")
         tool_calls = msg.get("tool_calls") or []
 
         if tool_calls:
-            # Keep assistant tool-call message for the provider
             messages.append(
                 {
                     "role": "assistant",
@@ -90,9 +101,13 @@ async def run_chat(user_text: str) -> dict[str, Any]:
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 args = _parse_args(fn.get("arguments"))
-                result = _run_tool(name, args)
+                result = await _run_tool(name, args)
                 if name == "memory_write" and result.get("ok"):
                     touched.append(str(result.get("id") or args.get("name") or ""))
+                if name == "wake_set" and result.get("ok"):
+                    w = result.get("wake") or {}
+                    if w.get("id") is not None:
+                        wakes_touched.append(int(w["id"]))
                 messages.append(
                     {
                         "role": "tool",
@@ -108,9 +123,9 @@ async def run_chat(user_text: str) -> dict[str, Any]:
             "user_id": uid,
             "message": assistant,
             "memories_touched": [t for t in touched if t],
+            "wakes_touched": wakes_touched,
         }
 
-    # Tool round exhausted — ask once more without tools
     msg = await chat_completion(messages, tools=None)
     reply = (msg.get("content") or "").strip() or "（这轮工具次数用尽了，再说一次试试）"
     assistant = await db.add_message(uid, "assistant", reply)
@@ -118,4 +133,5 @@ async def run_chat(user_text: str) -> dict[str, Any]:
         "user_id": uid,
         "message": assistant,
         "memories_touched": [t for t in touched if t],
+        "wakes_touched": wakes_touched,
     }
