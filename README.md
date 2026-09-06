@@ -22,23 +22,17 @@ Full step-by-step: **README-zh.md**.
 
 ## Phone access
 
-Server runs on your computer. Pick by scenario:
+1. **Reach your machine’s IP** (no public internet required)  
+   - **1A Tailscale** — Mac stays on; chat via `http://<tailscale-ip>:8787`. Phones often can’t run Tailscale + another VPN at once; on Mac, turn off **Use Tailscale DNS settings** to keep a system proxy.  
+   - **1B Same Wi‑Fi** — `http://<LAN-IP>:8787` at home.
 
-1. **Reach the computer’s IP** (no public internet required)  
-   - **1A Tailscale** — leave the Mac running; chat away from home via `http://<tailscale-ip>:8787`. On phones, Tailscale often conflicts with other VPNs/proxies; on Mac you can usually keep a proxy if you turn off **Use Tailscale DNS settings**.  
-   - **1B Same Wi‑Fi** — simplest at home: `http://<LAN-IP>:8787`.
-
-2. **Temporary public tunnel** (link = key; no auth yet)  
-   - **2A cloudflared** (preferred for a quick try): `cloudflared tunnel --url http://localhost:8787`  
+2. **Temporary public tunnel** (link = key; no auth)  
+   - **2A cloudflared** (quick try): `cloudflared tunnel --url http://localhost:8787`  
    - **2B ngrok**: `ngrok http 8787`
 
-3. **Deploy your own cloud server** — the real “open and use” path; **not shipped yet**.
+3. **DIY cloud VPS** — **you** rent a server, clone this repo, run Compose, put HTTPS in front. This is **not** a hosted “open and use” product from the maintainers. Outline only for now (see README-zh.md); no one-click installer yet. Don’t expose bare `:8787` without some door (auth / Tailscale-only / etc.).
 
-Do not raw-port-forward 8787 to the open internet.
-
-## What works / not yet
-
-See README-zh.md.
+Do not raw-port-forward home `8787` to the open internet.
 
 ## Docs
 
