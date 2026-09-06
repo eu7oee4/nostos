@@ -9,7 +9,7 @@ from app.db import init_db
 from app.memory.store import memories_dir
 from app.schedule import start_scheduler, stop_scheduler
 
-app = FastAPI(title="nostos", version="0.3.0-minwake")
+app = FastAPI(title="nostos", version="0.4.0-random-wake")
 app.include_router(api_router)
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
@@ -33,4 +33,12 @@ def index():
     index_path = WEB_DIR / "index.html"
     if index_path.is_file():
         return FileResponse(index_path)
-    return {"service": "nostos", "stage": "min-wake"}
+    return {"service": "nostos", "stage": "random-wake"}
+
+
+@app.get("/settings")
+def settings_page():
+    path = WEB_DIR / "settings.html"
+    if path.is_file():
+        return FileResponse(path)
+    return {"detail": "settings UI missing"}

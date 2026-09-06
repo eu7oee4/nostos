@@ -6,6 +6,7 @@ from typing import Any
 
 from app import db
 from app.config import settings
+from app.schedule.prefs import load_prefs, proactive_on
 from app.schedule.scheduler import disarm_wake, schedule_wake
 
 
@@ -21,6 +22,7 @@ async def wake_set_handler(
         wake_at=wake_at,
         note=note,
         intent=intent,
+        source="manual",
     )
 
 
@@ -28,7 +30,7 @@ async def wake_list_handler(**_kwargs: Any) -> dict[str, Any]:
     items = await db.list_wakes(settings.user_id, status="pending")
     return {
         "ok": True,
-        "proactive_enabled": settings.proactive_enabled,
+        "proactive_enabled": proactive_on(load_prefs()),
         "wakes": items,
     }
 
