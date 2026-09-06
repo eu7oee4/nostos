@@ -1,4 +1,4 @@
-"""SQLite: messages with user_id. Server stamps created_at."""
+"""SQLite: messages + wakes. Server stamps created_at."""
 
 from __future__ import annotations
 
@@ -20,6 +20,19 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_created
     ON messages (user_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS wakes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    wake_at TEXT NOT NULL,
+    note TEXT,
+    intent TEXT NOT NULL DEFAULT 'check_in',
+    status TEXT NOT NULL CHECK (status IN ('pending', 'fired', 'cancelled')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    fired_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wakes_user_status_at
+    ON wakes (user_id, status, wake_at);
 """
 
 
@@ -79,3 +92,93 @@ async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]
         for m in msgs
         if m["role"] in ("user", "assistant")
     ]
+
+
+async def create_wake(
+    user_id: str,
+    wake_at: str,
+    note: str | None = None,
+    intent: str = "check_in",
+) -> dict[str, Any]:
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            "INSERT INTO wakes (user_id, wake_at, note, intent, status) "
+            "VALUES (?, ?, ?, ?, 'pending')",
+            (user_id, wake_at, note, intent or "check_in"),
+        )
+        wake_id = cur.lastrowid
+        await conn.commit()
+        cur = await conn.execute(
+            "SELECT id, user_id, wake_at, note, intent, status, created_at, fired_at "
+            "FROM wakes WHERE id = ?",
+            (wake_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row)
+
+
+async def get_wake(wake_id: int) -> dict[str, Any] | None:
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            "SELECT id, user_id, wake_at, note, intent, status, created_at, fired_at "
+            "FROM wakes WHERE id = ?",
+            (wake_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def list_wakes(
+    user_id: str,
+    status: str | None = "pending",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 200))
+    async with await _connect() as conn:
+        if status:
+            cur = await conn.execute(
+                "SELECT id, user_id, wake_at, note, intent, status, created_at, fired_at "
+                "FROM wakes WHERE user_id = ? AND status = ? "
+                "ORDER BY wake_at ASC LIMIT ?",
+                (user_id, status, limit),
+            )
+        else:
+            cur = await conn.execute(
+                "SELECT id, user_id, wake_at, note, intent, status, created_at, fired_at "
+                "FROM wakes WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+                (user_id, limit),
+            )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def mark_wake_fired(wake_id: int) -> None:
+    async with await _connect() as conn:
+        await conn.execute(
+            "UPDATE wakes SET status = 'fired', "
+            "fired_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (wake_id,),
+        )
+        await conn.commit()
+
+
+async def mark_wake_cancelled(wake_id: int) -> bool:
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            "UPDATE wakes SET status = 'cancelled' "
+            "WHERE id = ? AND status = 'pending'",
+            (wake_id,),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def count_pending_wakes(user_id: str | None = None) -> int:
+    uid = user_id or settings.user_id
+    async with await _connect() as conn:
+        cur = await conn.execute(
+            "SELECT COUNT(*) AS n FROM wakes WHERE user_id = ? AND status = 'pending'",
+            (uid,),
+        )
+        row = await cur.fetchone()
+        return int(row["n"] if row else 0)
