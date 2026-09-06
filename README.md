@@ -1,6 +1,8 @@
 # nostos
 
-> 暂定名。AI 伙伴：记得你，也会来找你。自托管 / BYOK。
+> Tentative name. An AI companion that remembers you and reaches out. Self-hosted / BYOK.
+
+**中文说明：[README-zh.md](README-zh.md)**
 
 **Companion, not assistant.** This branch stage: **min-chat** — talk in a loop. No long-term memory, no proactive reach-out, no nostools yet.
 
@@ -9,11 +11,12 @@
 ```bash
 git clone https://github.com/eu7oee4/nostos.git
 cd nostos
+git checkout feat/min-chat-loop   # until merged
 cp .env.example .env   # set LLM_API_KEY (DeepSeek by default)
 docker compose up --build
 ```
 
-Open http://localhost:8787 — type and send. Health: http://localhost:8787/health
+On this machine open **http://localhost:8787** (not `www.localhost.com`). Health: http://localhost:8787/health
 
 Without Docker:
 
@@ -26,6 +29,30 @@ export PYTHONPATH=server DATA_DIR=./data
 # load .env yourself or export LLM_API_KEY
 uvicorn app.main:app --app-dir server --reload --port 8787
 ```
+
+## Chat from your phone
+
+The server runs on your computer. On a phone, `localhost` means the phone itself — use one of these instead.
+
+### 1. Same Wi‑Fi (quickest)
+
+1. Keep `docker compose up` running on the computer.
+2. Find the computer’s LAN IP (examples: Mac `ipconfig getifaddr en0`, or System Settings → Network).
+3. On the phone browser open `http://<LAN-IP>:8787` (e.g. `http://192.168.1.23:8787`).
+
+Tips: phone and computer must be on the same Wi‑Fi (not guest/AP isolation). If it fails, check the Mac firewall allowing Docker/Python on port 8787. **Only for trusted networks** — there is no login yet.
+
+### 2. Tunnel (different network)
+
+Keep the app running locally, then expose it with a tunnel and open the HTTPS URL on your phone:
+
+- [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-apps/) (`cloudflared tunnel ...`)
+- [ngrok](https://ngrok.com/) (`ngrok http 8787`)
+- [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) if you already use Tailscale
+
+Treat the public link like a house key — don’t share it. Still no auth in min-chat.
+
+Do **not** port-forward 8787 to the open internet without protection.
 
 ## What works (min-chat)
 
