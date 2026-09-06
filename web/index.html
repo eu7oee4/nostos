@@ -2,64 +2,275 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f10" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f4f4f5" media="(prefers-color-scheme: light)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>nostos</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 1.5rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
-    .meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
-    #log { border: 1px solid #ccc; border-radius: 8px; min-height: 16rem; max-height: 60vh; overflow: auto; padding: 0.75rem; margin-bottom: 0.75rem; }
-    .msg { margin: 0.5rem 0; white-space: pre-wrap; }
-    .msg .who { font-weight: 600; font-size: 0.8rem; opacity: 0.7; }
-    form { display: flex; gap: 0.5rem; }
-    input[type=text] { flex: 1; padding: 0.5rem 0.65rem; border-radius: 6px; border: 1px solid #ccc; }
-    button { padding: 0.5rem 0.9rem; border-radius: 6px; border: 0; background: #222; color: #fff; cursor: pointer; }
-    button:disabled { opacity: 0.5; cursor: default; }
-    .err { color: #b00020; font-size: 0.9rem; margin-top: 0.5rem; }
+    :root {
+      color-scheme: light dark;
+      --bg: #f4f4f5;
+      --surface: #ffffff;
+      --text: #111111;
+      --muted: #6b6b70;
+      --border: rgba(0, 0, 0, 0.08);
+      --user-bg: #111111;
+      --user-fg: #ffffff;
+      --bot-bg: #e8e8ea;
+      --bot-fg: #111111;
+      --danger: #b00020;
+      --composer: #ffffff;
+      --shadow: 0 -8px 24px rgba(0, 0, 0, 0.04);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-top: env(safe-area-inset-top, 0px);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f0f10;
+        --surface: #17171a;
+        --text: #f5f5f7;
+        --muted: #9a9aa0;
+        --border: rgba(255, 255, 255, 0.1);
+        --user-bg: #f5f5f7;
+        --user-fg: #111111;
+        --bot-bg: #2a2a2e;
+        --bot-fg: #f5f5f7;
+        --composer: #17171a;
+        --shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .app {
+      height: 100dvh;
+      max-width: 40rem;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+    }
+
+    header {
+      flex: 0 0 auto;
+      padding: calc(0.75rem + var(--safe-top)) 1rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.05rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+    }
+    header .meta {
+      margin: 0.2rem 0 0;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    header a { color: inherit; }
+
+    #log {
+      flex: 1 1 auto;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 0.85rem 0.9rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+    }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      max-width: 88%;
+      animation: rise 0.18s ease-out;
+    }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
+    .msg .who {
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin: 0 0.35rem 0.2rem;
+    }
+    .msg .bubble {
+      padding: 0.65rem 0.85rem;
+      border-radius: 1.1rem;
+      line-height: 1.45;
+      font-size: 0.98rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user .bubble {
+      background: var(--user-bg);
+      color: var(--user-fg);
+      border-bottom-right-radius: 0.35rem;
+    }
+    .msg.assistant .bubble {
+      background: var(--bot-bg);
+      color: var(--bot-fg);
+      border-bottom-left-radius: 0.35rem;
+    }
+
+    .composer {
+      flex: 0 0 auto;
+      padding: 0.65rem 0.75rem calc(0.65rem + var(--safe-bottom));
+      border-top: 1px solid var(--border);
+      background: var(--composer);
+      box-shadow: var(--shadow);
+    }
+    form {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-end;
+    }
+    #box {
+      flex: 1;
+      min-height: 2.75rem;
+      max-height: 7.5rem;
+      resize: none;
+      padding: 0.7rem 0.85rem;
+      border-radius: 1.25rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      font-size: 16px; /* avoid iOS zoom */
+      line-height: 1.35;
+      outline: none;
+    }
+    #box:focus { border-color: color-mix(in srgb, var(--text) 35%, var(--border)); }
+    #go {
+      flex: 0 0 auto;
+      height: 2.75rem;
+      min-width: 2.75rem;
+      padding: 0 0.95rem;
+      border: 0;
+      border-radius: 999px;
+      background: var(--user-bg);
+      color: var(--user-fg);
+      font: inherit;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+    }
+    #go:disabled { opacity: 0.45; cursor: default; }
+    .err {
+      min-height: 1.1rem;
+      margin: 0.4rem 0.25rem 0;
+      color: var(--danger);
+      font-size: 0.82rem;
+    }
+
+    .empty {
+      margin: auto;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.9rem;
+      padding: 2rem 1rem;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: none; }
+    }
   </style>
 </head>
 <body>
-  <h1>nostos</h1>
-  <p class="meta">最小可聊 · 无记忆 / 无触角 · <a href="/health">/health</a></p>
-  <div id="log"></div>
-  <form id="f">
-    <input id="box" type="text" placeholder="说点什么…" autocomplete="off" />
-    <button id="go" type="submit">发送</button>
-  </form>
-  <div class="err" id="err"></div>
+  <div class="app">
+    <header>
+      <h1>nostos</h1>
+      <p class="meta">最小可聊 · 无记忆 / 无触角 · <a href="/health">/health</a></p>
+    </header>
+
+    <div id="log" aria-live="polite"></div>
+
+    <div class="composer">
+      <form id="f">
+        <textarea id="box" rows="1" placeholder="说点什么…" enterkeyhint="send" autocomplete="off"></textarea>
+        <button id="go" type="submit">发送</button>
+      </form>
+      <div class="err" id="err"></div>
+    </div>
+  </div>
+
   <script>
     const log = document.getElementById('log');
     const box = document.getElementById('box');
     const go = document.getElementById('go');
     const err = document.getElementById('err');
 
+    function autosize() {
+      box.style.height = 'auto';
+      box.style.height = Math.min(box.scrollHeight, 120) + 'px';
+    }
+
     function addBubble(role, content) {
-      const div = document.createElement('div');
-      div.className = 'msg';
-      div.innerHTML = '<div class="who">' + (role === 'user' ? '你' : 'nostos') + '</div>';
-      const body = document.createElement('div');
-      body.textContent = content;
-      div.appendChild(body);
-      log.appendChild(div);
+      const empty = log.querySelector('.empty');
+      if (empty) empty.remove();
+
+      const wrap = document.createElement('div');
+      wrap.className = 'msg ' + (role === 'user' ? 'user' : 'assistant');
+
+      const who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = role === 'user' ? '你' : 'nostos';
+
+      const bubble = document.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = content;
+
+      wrap.appendChild(who);
+      wrap.appendChild(bubble);
+      log.appendChild(wrap);
       log.scrollTop = log.scrollHeight;
+    }
+
+    function showEmpty() {
+      log.innerHTML = '';
+      const el = document.createElement('div');
+      el.className = 'empty';
+      el.textContent = '还没有消息。说一句，开始聊。';
+      log.appendChild(el);
     }
 
     async function load() {
       const r = await fetch('/messages');
       const data = await r.json();
+      const msgs = data.messages || [];
+      if (!msgs.length) {
+        showEmpty();
+        return;
+      }
       log.innerHTML = '';
-      (data.messages || []).forEach(m => addBubble(m.role, m.content));
+      msgs.forEach(m => addBubble(m.role, m.content));
     }
 
-    document.getElementById('f').addEventListener('submit', async (e) => {
-      e.preventDefault();
+    async function send() {
       err.textContent = '';
       const content = box.value.trim();
       if (!content) return;
+
       box.value = '';
+      autosize();
       addBubble('user', content);
       go.disabled = true;
+
       try {
         const r = await fetch('/chat', {
           method: 'POST',
@@ -75,9 +286,23 @@
         go.disabled = false;
         box.focus();
       }
+    }
+
+    document.getElementById('f').addEventListener('submit', (e) => {
+      e.preventDefault();
+      send();
+    });
+
+    box.addEventListener('input', autosize);
+    box.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
     });
 
     load().catch(e => { err.textContent = String(e); });
+    box.focus();
   </script>
 </body>
 </html>
