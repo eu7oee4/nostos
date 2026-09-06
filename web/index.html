@@ -195,7 +195,7 @@
   <div class="app">
     <header>
       <h1>nostos</h1>
-      <p class="meta">最小记忆 · <a href="/memories">/memories</a> · <a href="/health">/health</a></p>
+      <p class="meta">最小 wake · <a href="/wakes">/wakes</a> · <a href="/memories">/memories</a> · <a href="/health">/health</a></p>
     </header>
 
     <div id="log" aria-live="polite"></div>
@@ -214,6 +214,7 @@
     const box = document.getElementById('box');
     const go = document.getElementById('go');
     const err = document.getElementById('err');
+    let knownCount = 0;
 
     function autosize() {
       box.style.height = 'auto';
@@ -249,10 +250,13 @@
       log.appendChild(el);
     }
 
-    async function load() {
+    async function load(opts) {
+      const silent = opts && opts.silent;
       const r = await fetch('/messages');
       const data = await r.json();
       const msgs = data.messages || [];
+      if (silent && msgs.length === knownCount) return;
+      knownCount = msgs.length;
       if (!msgs.length) {
         showEmpty();
         return;
@@ -277,9 +281,13 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ content }),
         });
-        const data = await r.json();
+        const raw = await r.text();
+        let data;
+        try { data = JSON.parse(raw); }
+        catch (_) { throw new Error(raw.slice(0, 200) || r.statusText); }
         if (!r.ok) throw new Error(data.detail || r.statusText);
         addBubble('assistant', data.message.content);
+        knownCount += 2;
       } catch (ex) {
         err.textContent = String(ex.message || ex);
       } finally {
@@ -302,6 +310,10 @@
     });
 
     load().catch(e => { err.textContent = String(e); });
+    setInterval(() => {
+      if (document.hidden) return;
+      load({ silent: true }).catch(() => {});
+    }, 8000);
     box.focus();
   </script>
 </body>
