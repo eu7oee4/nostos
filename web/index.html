@@ -5,13 +5,79 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>nostos</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
-    code { background: #f4f4f4; padding: 0.1em 0.35em; border-radius: 4px; }
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 1.5rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+    .meta { color: #666; font-size: 0.85rem; margin-bottom: 1rem; }
+    #log { border: 1px solid #ccc; border-radius: 8px; min-height: 16rem; max-height: 60vh; overflow: auto; padding: 0.75rem; margin-bottom: 0.75rem; }
+    .msg { margin: 0.5rem 0; white-space: pre-wrap; }
+    .msg .who { font-weight: 600; font-size: 0.8rem; opacity: 0.7; }
+    form { display: flex; gap: 0.5rem; }
+    input[type=text] { flex: 1; padding: 0.5rem 0.65rem; border-radius: 6px; border: 1px solid #ccc; }
+    button { padding: 0.5rem 0.9rem; border-radius: 6px; border: 0; background: #222; color: #fff; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    .err { color: #b00020; font-size: 0.9rem; margin-top: 0.5rem; }
   </style>
 </head>
 <body>
   <h1>nostos</h1>
-  <p>Scaffold. Health: <a href="/health"><code>/health</code></a></p>
-  <p>记得你，也会来找你 — 实现还没动工。</p>
+  <p class="meta">最小可聊 · 无记忆 / 无触角 · <a href="/health">/health</a></p>
+  <div id="log"></div>
+  <form id="f">
+    <input id="box" type="text" placeholder="说点什么…" autocomplete="off" />
+    <button id="go" type="submit">发送</button>
+  </form>
+  <div class="err" id="err"></div>
+  <script>
+    const log = document.getElementById('log');
+    const box = document.getElementById('box');
+    const go = document.getElementById('go');
+    const err = document.getElementById('err');
+
+    function addBubble(role, content) {
+      const div = document.createElement('div');
+      div.className = 'msg';
+      div.innerHTML = '<div class="who">' + (role === 'user' ? '你' : 'nostos') + '</div>';
+      const body = document.createElement('div');
+      body.textContent = content;
+      div.appendChild(body);
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function load() {
+      const r = await fetch('/messages');
+      const data = await r.json();
+      log.innerHTML = '';
+      (data.messages || []).forEach(m => addBubble(m.role, m.content));
+    }
+
+    document.getElementById('f').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      const content = box.value.trim();
+      if (!content) return;
+      box.value = '';
+      addBubble('user', content);
+      go.disabled = true;
+      try {
+        const r = await fetch('/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || r.statusText);
+        addBubble('assistant', data.message.content);
+      } catch (ex) {
+        err.textContent = String(ex.message || ex);
+      } finally {
+        go.disabled = false;
+        box.focus();
+      }
+    });
+
+    load().catch(e => { err.textContent = String(e); });
+  </script>
 </body>
 </html>
