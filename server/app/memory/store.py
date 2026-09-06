@@ -12,6 +12,7 @@ from app.config import settings
 
 INDEX_NAME = "index.json"
 MAX_RECALL_CHARS = 6000
+_H1 = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
 def memories_dir(user_id: str | None = None) -> Path:
@@ -34,6 +35,26 @@ def _now() -> str:
 
 def _index_path(user_id: str | None = None) -> Path:
     return memories_dir(user_id) / INDEX_NAME
+
+
+def _looks_mojibake(text: str) -> bool:
+    """Heuristic: replacement chars or common UTF-8-as-Latin1 garbage."""
+    if not text:
+        return True
+    if "\ufffd" in text:
+        return True
+    # Dense CJK Compatibility / rare private-use-ish junk often appears in mojibake titles
+    weird = sum(1 for ch in text if ord(ch) >= 0xE000 or "\u0080" <= ch <= "\u00ff")
+    return weird >= max(2, len(text) // 3)
+
+
+def _title_from_body(body: str, fallback: str) -> str:
+    m = _H1.search(body or "")
+    if m:
+        t = m.group(1).strip()
+        if t and not _looks_mojibake(t):
+            return t[:80]
+    return fallback
 
 
 def _load_index(user_id: str | None = None) -> dict[str, Any]:
@@ -80,7 +101,7 @@ def _upsert_index_entry(
 
 
 def list_memories(user_id: str | None = None) -> list[dict[str, Any]]:
-    """List memory metadata (prefers index; falls back to scanning *.md)."""
+    """List memory metadata; title prefers md H1 over index (avoids tool-arg mojibake)."""
     uid = user_id or settings.user_id
     root = memories_dir(uid)
     indexed = {m["id"]: m for m in _load_index(uid).get("memories", []) if m.get("id")}
@@ -88,7 +109,13 @@ def list_memories(user_id: str | None = None) -> list[dict[str, Any]]:
     for path in sorted(root.glob("*.md")):
         mem_id = path.stem
         meta = indexed.get(mem_id, {})
-        title = meta.get("title") or mem_id
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError:
+            body = ""
+        indexed_title = meta.get("title") or ""
+        fallback = mem_id if _looks_mojibake(indexed_title) else (indexed_title or mem_id)
+        title = _title_from_body(body, fallback)
         updated = meta.get("updated_at")
         if not updated:
             try:
@@ -137,15 +164,27 @@ def write_memory(
     if not body:
         return {"ok": False, "id": mem_id, "detail": "empty content"}
 
-    display = (title or name or mem_id).strip() or mem_id
-    # Keep a human title as first heading if missing
+    # Prefer H1 inside content; then clean title arg; else use id (never store mojibake titles)
+    from_body = _title_from_body(body, "")
+    if from_body:
+        display = from_body
+    elif title and not _looks_mojibake(title):
+        display = title.strip()[:80]
+    else:
+        display = mem_id
+
     if not body.lstrip().startswith("#"):
         body = f"# {display}\n\n{body}\n"
     else:
+        # Rewrite bad H1 if it looks like mojibake
+        m = _H1.search(body)
+        if m and _looks_mojibake(m.group(1)):
+            body = _H1.sub(f"# {display}", body, count=1)
         body = body if body.endswith("\n") else body + "\n"
 
     path = memories_dir(uid) / f"{mem_id}.md"
     path.write_text(body, encoding="utf-8")
+    display = _title_from_body(body, display)
     _upsert_index_entry(mem_id, display, uid)
     return {
         "ok": True,
