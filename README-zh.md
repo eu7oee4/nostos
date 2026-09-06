@@ -193,4 +193,11 @@ export PYTHONPATH=server DATA_DIR=./data
 uvicorn app.main:app --app-dir server --reload --port 8787
 ```
 
-Wait I still have typo. Fix uvicorn properly.
+## 文档
+
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- [PLAN_companion.md](docs/PLAN_companion.md)（全文暂链到 cassette）
+
+## License
+
+MIT
