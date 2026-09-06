@@ -1,0 +1,11 @@
+services:
+  nostos:
+    build: .
+    ports:
+      - "${PORT:-8787}:8787"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    environment:
+      DATA_DIR: /app/data
