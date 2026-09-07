@@ -90,14 +90,25 @@ async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
-async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]:
-    """Recent turns for the model."""
+async def list_recent_turns(user_id: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Recent user/assistant rows with created_at for prompt assembly."""
     msgs = await list_messages(user_id, limit=limit)
     return [
-        {"role": m["role"], "content": m["content"]}
+        {
+            "id": m["id"],
+            "role": m["role"],
+            "content": m["content"],
+            "created_at": m["created_at"],
+        }
         for m in msgs
         if m["role"] in ("user", "assistant")
     ]
+
+
+async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]:
+    """Recent turns for the model (role/content only; prefer list_recent_turns)."""
+    turns = await list_recent_turns(user_id, limit=limit)
+    return [{"role": t["role"], "content": t["content"]} for t in turns]
 
 
 async def create_wake(
