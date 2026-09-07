@@ -138,7 +138,8 @@ def _bootstrap() -> None:
             name="wake_set",
             description=(
                 "Schedule a proactive wake: nostos will come find the user later "
-                "with an in-app message. Prefer delay_seconds for tests. "
+                "with an in-app message. delay_seconds = relative from now "
+                "(prefer for tests); wake_at = absolute ISO-8601 UTC. "
                 "Requires PROACTIVE_ENABLED=true."
             ),
             builtin=True,
@@ -149,11 +150,11 @@ def _bootstrap() -> None:
                 "properties": {
                     "delay_seconds": {
                         "type": "number",
-                        "description": "Seconds from now (good for local tests)",
+                        "description": "Relative delay in seconds from now (good for local tests)",
                     },
                     "wake_at": {
                         "type": "string",
-                        "description": "ISO-8601 UTC time to wake, e.g. 2026-09-07T04:00:00Z",
+                        "description": "Absolute ISO-8601 UTC time to wake, e.g. 2026-09-07T04:00:00Z",
                     },
                     "note": {
                         "type": "string",
