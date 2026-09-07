@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from app.config import settings
+
+log = logging.getLogger("nostos.llm")
 
 
 class LLMError(Exception):
@@ -21,7 +24,10 @@ async def chat_completion(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = "auto",
 ) -> dict[str, Any]:
-    """Return the assistant message object (may include tool_calls)."""
+    """Return the assistant message object (may include tool_calls).
+
+    Logs raw usage (incl. cache hit fields) at INFO when present.
+    """
     if not settings.llm_api_key:
         raise LLMError(401, "LLM_API_KEY is empty — set it in .env")
 
@@ -47,6 +53,12 @@ async def chat_completion(
         if resp.status_code >= 400:
             raise LLMError(resp.status_code, resp.text)
         data = resp.json()
+
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        log.info("llm usage %s", usage)
+    else:
+        log.info("llm usage missing")
 
     try:
         return data["choices"][0]["message"]
