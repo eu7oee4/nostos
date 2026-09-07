@@ -78,7 +78,7 @@ def _trigger_message(trigger: Trigger, nickname: str) -> dict[str, str]:
         body = trigger.text or ""
         return {
             "role": "user",
-            "content": f「{nickname}发来一条消息：{body}」,
+            "content": f"「{nickname}发来一条消息：{body}」",
         }
 
     # wake (7b): same pipeline; reusable when wake fire adopts assemble.
