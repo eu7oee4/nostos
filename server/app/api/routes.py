@@ -10,6 +10,7 @@ from app import db
 from app.llm import LLMError
 from app.memory import list_memories, read_memory
 from app.prefs import delete_style, list_style
+from app.push import public_key_b64u
 from app.schedule.scheduler import schedule_wake
 
 router = APIRouter()
@@ -17,6 +18,18 @@ router = APIRouter()
 
 class ChatIn(BaseModel):
     content: str = Field(min_length=1, max_length=16000)
+
+
+class PushKeys(BaseModel):
+    p256dh: str = Field(min_length=1, max_length=512)
+    auth: str = Field(min_length=1, max_length=256)
+
+
+class PushSubIn(BaseModel):
+    """浏览器 `pushManager.subscribe()` 返回的 subscription 原样上报。"""
+
+    endpoint: str = Field(min_length=1, max_length=2048)
+    keys: PushKeys
 
 
 class WakeIn(BaseModel):
@@ -37,6 +50,7 @@ async def health():
         "has_key": bool(settings.llm_api_key),
         "memory_count": len(list_memories(settings.user_id)),
         "proactive_enabled": settings.proactive_enabled,
+        "push_subscriptions": await db.count_push_subscriptions(settings.user_id),
         "pending_wakes": await db.count_pending_wakes(settings.user_id),
     }
 
@@ -75,6 +89,29 @@ def delete_pref(pref_id: str):
     if not delete_style(pref_id):
         raise HTTPException(404, "not found")
     return {"ok": True, "id": pref_id}
+
+@router.get("/push/vapid")
+def push_vapid():
+    """前端 subscribe() 要的 applicationServerKey。第一次调用会生成密钥对。"""
+    return {"public_key": public_key_b64u()}
+
+
+@router.post("/push/subscribe")
+async def push_subscribe(body: PushSubIn):
+    """存一台设备的订阅。同 endpoint 重复上报是覆盖，不是新增。"""
+    row = await db.upsert_push_subscription(
+        settings.user_id, body.endpoint, body.keys.p256dh, body.keys.auth
+    )
+    return {"ok": True, "id": row.get("id")}
+
+
+@router.delete("/push/subscribe")
+async def push_unsubscribe(endpoint: str):
+    """用户在这台设备上关掉通知。前端应同时调 subscription.unsubscribe()。"""
+    ok = await db.delete_push_subscription(endpoint)
+    if not ok:
+        raise HTTPException(404, "not found")
+    return {"ok": True}
 
 
 @router.get("/wakes")

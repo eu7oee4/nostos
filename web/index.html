@@ -6,6 +6,8 @@
   <meta name="theme-color" content="#0f0f10" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#f4f4f5" media="(prefers-color-scheme: light)" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
   <title>nostos</title>
   <style>
     :root {
@@ -185,10 +187,10 @@
       padding: 2rem 1rem;
     }
 
-    /* 说话方式抽屉：纠偏偏好的隐私出口。对话流里不露，只在这儿看得见。 */
+    /* header 右上角两个按钮：说话方式（纠偏的隐私出口）、开启通知（Web Push）。 */
     .bar { display: flex; align-items: flex-start; gap: 0.75rem; }
     .bar .grow { flex: 1 1 auto; min-width: 0; }
-    #prefsBtn {
+    #prefsBtn, #pushBtn {
       flex: 0 0 auto;
       margin-top: 0.1rem;
       padding: 0.35rem 0.7rem;
@@ -199,7 +201,16 @@
       font: inherit;
       font-size: 0.78rem;
       cursor: pointer;
+      white-space: nowrap;
     }
+    #pushBtn[hidden] { display: none; }
+    #pushBtn.on { color: var(--text); border-color: color-mix(in srgb, var(--text) 30%, var(--border)); }
+    #pushHint {
+      margin: 0.35rem 0 0;
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+    #pushHint[hidden] { display: none; }
 
     .sheet[hidden] { display: none; }
     .sheet {
@@ -273,7 +284,9 @@
           <p class="meta">最小 wake · <a href="/wakes">/wakes</a> · <a href="/memories">/memories</a> · <a href="/health">/health</a></p>
         </div>
         <button id="prefsBtn" type="button">说话方式</button>
+        <button id="pushBtn" type="button" hidden>开启通知</button>
       </div>
+      <p id="pushHint" hidden></p>
     </header>
 
     <div id="log" aria-live="polite"></div>
@@ -451,6 +464,132 @@
     prefsSheet.addEventListener('click', (e) => {
       if (e.target === prefsSheet) prefsSheet.hidden = true;
     });
+
+    // --- Web Push --------------------------------------------------------
+    // 「它主动来」（PLAN §1 假设 2）在这儿落地：不订阅的话，wake 只写进站内
+    // messages 表，用户不打开这一页就永远看不见。
+    const pushBtn = document.getElementById('pushBtn');
+    const pushHint = document.getElementById('pushHint');
+
+    const pushSupported = 'serviceWorker' in navigator
+      && 'PushManager' in window
+      && 'Notification' in window;
+    // iOS 只在 standalone PWA 下给 Web Push，Safari 标签页里 subscribe() 拿不到东西
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches
+      || window.navigator.standalone === true;
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+    function hint(text) {
+      pushHint.textContent = text || '';
+      pushHint.hidden = !text;
+    }
+
+    function b64ToU8(b64) {
+      const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+      const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+    }
+
+    async function currentSub() {
+      const reg = await navigator.serviceWorker.getRegistration();
+      return reg ? await reg.pushManager.getSubscription() : null;
+    }
+
+    function paint(on) {
+      pushBtn.hidden = false;
+      pushBtn.classList.toggle('on', on);
+      pushBtn.textContent = on ? '通知已开' : '开启通知';
+    }
+
+    async function enablePush() {
+      pushBtn.disabled = true;
+      try {
+        const reg = await navigator.serviceWorker.register('/sw.js');
+        await navigator.serviceWorker.ready;
+
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') {
+          hint(perm === 'denied'
+            ? '通知被拒了。要开的话得去系统设置里把这个站点的通知打开。'
+            : '没授权，通知开不了。');
+          return;
+        }
+
+        const { public_key } = await (await fetch('/push/vapid')).json();
+        const opts = {
+          userVisibleOnly: true,
+          applicationServerKey: b64ToU8(public_key),
+        };
+        let sub;
+        try {
+          sub = await reg.pushManager.subscribe(opts);
+        } catch (ex) {
+          // 这台设备上已有一个用**别的** VAPID 公钥订的（换过密钥、或同一 origin
+          // 上跑过别的东西）→ 浏览器拒绝换 key。退订旧的再来一次。
+          if (ex && ex.name === 'InvalidStateError') {
+            const old = await reg.pushManager.getSubscription();
+            if (old) await old.unsubscribe();
+            sub = await reg.pushManager.subscribe(opts);
+          } else {
+            throw ex;
+          }
+        }
+        const r = await fetch('/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sub),
+        });
+        if (!r.ok) throw new Error('上报失败 ' + r.status);
+        paint(true);
+        hint('他到点会自己来找你，这台设备上会响。');
+      } catch (ex) {
+        hint('开不了：' + (ex && ex.message ? ex.message : ex));
+      } finally {
+        pushBtn.disabled = false;
+      }
+    }
+
+    async function disablePush() {
+      pushBtn.disabled = true;
+      try {
+        const sub = await currentSub();
+        if (sub) {
+          await fetch('/push/subscribe?endpoint=' + encodeURIComponent(sub.endpoint),
+                      { method: 'DELETE' });
+          await sub.unsubscribe();
+        }
+        paint(false);
+        hint('这台设备不再收通知了。');
+      } finally {
+        pushBtn.disabled = false;
+      }
+    }
+
+    async function initPush() {
+      if (!pushSupported) return;                  // 不支持就整个按钮不出现
+      if (!window.isSecureContext) {
+        // HTTPS 是硬前提：SW 在非安全上下文根本注册不起来
+        pushBtn.hidden = false;
+        pushBtn.disabled = true;
+        pushBtn.textContent = '通知不可用';
+        hint('通知需要 HTTPS。见 README「手机怎么连」。');
+        return;
+      }
+      if (isIOS && !isStandalone) {
+        pushBtn.hidden = false;
+        pushBtn.disabled = true;
+        pushBtn.textContent = '开启通知';
+        hint('先用分享按钮「添加到主屏幕」，再从主屏图标打开——iOS 只在那种模式下才给通知。');
+        return;
+      }
+      paint(!!(await currentSub()));
+    }
+
+    pushBtn.addEventListener('click', () => {
+      if (pushBtn.classList.contains('on')) disablePush();
+      else enablePush();
+    });
+    initPush().catch(() => {});
 
     load().catch(e => { err.textContent = String(e); });
     setInterval(() => {

@@ -2,7 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from app.api.routes import router as api_router
@@ -37,6 +37,26 @@ async def _startup() -> None:
 @app.on_event("shutdown")
 async def _shutdown() -> None:
     await stop_scheduler()
+
+
+# Service Worker 必须从根路径提供（scope 决定它能管哪些页面），而且 MIME 必须是
+# JS。所以这两个是显式路由，不 mount StaticFiles —— web/ 里将来会有不该外露的东西。
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(WEB_DIR / "sw.js", media_type="application/javascript")
+
+
+@app.get("/manifest.json")
+def manifest():
+    return FileResponse(WEB_DIR / "manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/icon-{size}.png")
+def icon(size: int):
+    path = WEB_DIR / f"icon-{size}.png"
+    if not path.is_file():
+        raise HTTPException(404, "not found")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.get("/")

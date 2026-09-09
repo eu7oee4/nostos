@@ -1,4 +1,4 @@
-"""SQLite: messages + wakes. Server stamps created_at."""
+"""SQLite: messages + wakes + push subscriptions. Server stamps created_at."""
 
 from __future__ import annotations
 
@@ -35,6 +35,20 @@ CREATE TABLE IF NOT EXISTS wakes (
 );
 CREATE INDEX IF NOT EXISTS idx_wakes_user_status_at
     ON wakes (user_id, status, wake_at);
+
+-- Web Push 订阅。endpoint 唯一：同一台设备重复订阅是覆盖，不是新增一行。
+-- p256dh / auth 是浏览器给的加密材料，服务端只转发不解读。
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_ok_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_push_user
+    ON push_subscriptions (user_id);
 """
 
 
@@ -202,6 +216,77 @@ async def count_pending_wakes(user_id: str | None = None) -> int:
         cur = await conn.execute(
             "SELECT COUNT(*) AS n FROM wakes WHERE user_id = ? AND status = 'pending'",
             (uid,),
+        )
+        row = await cur.fetchone()
+        return int(row["n"] if row else 0)
+
+
+# --- push subscriptions ---------------------------------------------------
+
+
+async def upsert_push_subscription(
+    user_id: str,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+) -> dict[str, Any]:
+    """同一个 endpoint 再订阅就覆盖——浏览器换 key 时 endpoint 常常不变。"""
+    async with _connect() as conn:
+        await conn.execute(
+            """
+            INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(endpoint) DO UPDATE SET
+                user_id = excluded.user_id,
+                p256dh = excluded.p256dh,
+                auth = excluded.auth
+            """,
+            (user_id, endpoint, p256dh, auth),
+        )
+        await conn.commit()
+        cur = await conn.execute(
+            "SELECT * FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else {}
+
+
+async def list_push_subscriptions(user_id: str | None = None) -> list[dict[str, Any]]:
+    uid = user_id or settings.user_id
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT * FROM push_subscriptions WHERE user_id = ? ORDER BY id",
+            (uid,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def delete_push_subscription(endpoint: str) -> bool:
+    """推送被 endpoint 拒收（404/410）时调用——订阅过期了，留着只会每次都失败。"""
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,)
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def mark_push_ok(endpoint: str) -> None:
+    async with _connect() as conn:
+        await conn.execute(
+            "UPDATE push_subscriptions "
+            "SET last_ok_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE endpoint = ?",
+            (endpoint,),
+        )
+        await conn.commit()
+
+
+async def count_push_subscriptions(user_id: str | None = None) -> int:
+    uid = user_id or settings.user_id
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?", (uid,)
         )
         row = await cur.fetchone()
         return int(row["n"] if row else 0)
