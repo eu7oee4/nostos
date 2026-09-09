@@ -37,6 +37,7 @@
 - 第一天就有 `user_id`，无「可变当前用户」全局
 - 时间戳服务端盖、不进 system；召回挂当轮尾
 - 动作走 tool_use，不走正文标记
-- 备份与 cache usage 日志后续补，上线前必须有
+- cache usage 日志**已有**：`nostos.llm` INFO 打印 provider 返回的整个 usage
+- 备份还没做，上线前必须有（含定期真还原演习——「备份存在」不等于「备份能救命」）
 
 详见 [PLAN_companion.md](./PLAN_companion.md)。

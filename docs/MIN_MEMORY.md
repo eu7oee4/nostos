@@ -16,7 +16,10 @@ data/memories/<USER_ID>/
 
 ## 怎么进对话
 
-1. 每轮 chat：把现有 md **召回**挂在消息列表末尾（`【当前记忆召回】`）。
+1. 每轮 chat：把现有 md **召回**注入一条 system 消息，位置在**对话历史之后、
+   当前轮之前**，开头是「现在浮现在你脑海里的记忆有：」。没有记忆时整块省略，
+   不留占位（发言权原则：没注入到眼前的东西不许评论）。拼装全貌见
+   [PROMPT_ASSEMBLY.md](./PROMPT_ASSEMBLY.md)。
 2. 模型可调用内置 tool：`memory_list` / `memory_read` / `memory_write`（nostools 注册表）。
 3. 写入后下一轮召回就能看见；也可打开 `/memories` 查看。
 
