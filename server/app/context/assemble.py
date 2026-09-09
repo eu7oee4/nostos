@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.context.system_prompt import get_system_prompt
 from app.persona import load_persona
+from app.prefs import prefs_block
 from app.profile import profile_block
 
 _WEEKDAYS_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -194,6 +195,13 @@ def build_messages(
                 "content": f"【伙伴人格 / persona】\n{persona}",
             }
         )
+
+    # 纠偏层（PLAN §4.2 的 [块2]）：紧跟 persona，断点②落在这儿之后——改 prefs
+    # 只炸②以后，①（系统提示 + 档案 + 人格，大头）仍命中。位置**不能**挪到召回
+    # 那边：那是每轮可变的后缀，风格纠偏必须常驻。
+    prefs = prefs_block()
+    if prefs:
+        messages.append({"role": "system", "content": prefs})
 
     for row in history_rows:
         rendered = _render_dialog_row(row, tz_name)
