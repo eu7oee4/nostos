@@ -59,6 +59,10 @@ def _bootstrap() -> None:
         memory_read_handler,
         memory_write_handler,
     )
+    from app.nostools.prefs_tools import (
+        prefs_list_handler,
+        prefs_write_handler,
+    )
     from app.nostools.wake_tools import (
         wake_cancel_handler,
         wake_list_handler,
@@ -131,6 +135,64 @@ def _bootstrap() -> None:
                 "additionalProperties": False,
             },
             handler=memory_write_handler,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="prefs_write",
+            description=(
+                "Call this EVERY time the user says anything about HOW you talk "
+                "— length, tone, politeness, preamble, asking questions back, "
+                "emoji, punctuation, what you call them. "
+                "Triggers include 「说短点」「你别这么客气」「别老反问我」"
+                "「别用感叹号」「说话别这么正式」. "
+                "Without this call the correction is forgotten as soon as the "
+                "conversation window moves on — saying you will remember is not "
+                "remembering. "
+                "Store one short standing instruction to yourself; same id "
+                "overwrites (short stable ids: brevity, no-preamble, tone). "
+                "This is not a fact about the user — memory_write is for facts."
+            ),
+            builtin=True,
+            enabled=True,
+            side_effect="write",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Short stable slug, e.g. brevity, no-preamble",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": (
+                            "One short line, phrased as an instruction to you, "
+                            "e.g. 跟她说话不用铺垫，直接说"
+                        ),
+                    },
+                },
+                "required": ["id", "text"],
+                "additionalProperties": False,
+            },
+            handler=prefs_write_handler,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="prefs_list",
+            description=(
+                "List the speaking-style corrections already recorded (id + text). "
+                "Check here before writing so you overwrite instead of piling on."
+            ),
+            builtin=True,
+            enabled=True,
+            side_effect="read",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            handler=prefs_list_handler,
         )
     )
     registry.register(

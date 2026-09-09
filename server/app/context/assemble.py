@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.context.system_prompt import get_system_prompt
 from app.persona import load_persona
+from app.prefs import prefs_block
 from app.profile import profile_block
 
 _WEEKDAYS_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -145,7 +146,16 @@ def _trigger_message(
 
     # wake (7b)：不是她说话，用〔〕框住——user 槽里除了她的原话就只有这一种东西，
     # 得一眼分得开，免得重铸之后被读成"她说了句奇怪的话"。
-    parts = ["没人找你，是你自己到点醒过来的。"]
+    #
+    # 措辞 2026-09-10 改过（issue #16）。原文是「没人找你，是你自己到点醒过来的。」，
+    # 实测他把「醒过来」当成了**要配画面的动作**，回复开头频繁冒出
+    # 「（轻声）」「（推了下门缝，压低声音）」这类旁白——推送上线后那玩意儿直接顶到
+    # 锁屏上，用户第一眼看到的是舞台说明而不是他要说的话。
+    #
+    # 交错采样 n=40：旧措辞 35%，这版 20%（z≈1.50，没到显著，但每一轮采样都是这版更低，
+    # 而且没出现学舌框内词）。**压不到 0，prompt 治不干净**，残留见 issue #16。
+    # 这句在最后一条消息里、断点③之后，本来每轮就变，所以改它**不花任何缓存**。
+    parts = ["轮到你说话。没有新消息。"]
     note = (trigger.note or "").strip()
     intent = (trigger.intent or "").strip()
     extra = (trigger.text or "").strip()
@@ -194,6 +204,13 @@ def build_messages(
                 "content": f"【伙伴人格 / persona】\n{persona}",
             }
         )
+
+    # 纠偏层（PLAN §4.2 的 [块2]）：紧跟 persona，断点②落在这儿之后——改 prefs
+    # 只炸②以后，①（系统提示 + 档案 + 人格，大头）仍命中。位置**不能**挪到召回
+    # 那边：那是每轮可变的后缀，风格纠偏必须常驻。
+    prefs = prefs_block()
+    if prefs:
+        messages.append({"role": "system", "content": prefs})
 
     for row in history_rows:
         rendered = _render_dialog_row(row, tz_name)

@@ -9,6 +9,7 @@ from app.config import settings
 from app import db
 from app.llm import LLMError
 from app.memory import list_memories, read_memory
+from app.prefs import delete_style, list_style
 from app.push import public_key_b64u
 from app.schedule.scheduler import schedule_wake
 
@@ -73,6 +74,21 @@ def get_memory(name: str):
         raise HTTPException(404, got.get("detail") or "not found")
     return got
 
+
+@router.get("/prefs")
+def get_prefs():
+    """纠偏偏好的隐私出口（PLAN §4.2「关于用户的事实，用户可看可删」）。
+
+    对话流里一个字都不露（模型记完不宣布），能看见它们的地方只有这儿和菜单。
+    """
+    return {"user_id": settings.user_id, "prefs": list_style()}
+
+
+@router.delete("/prefs/{pref_id}")
+def delete_pref(pref_id: str):
+    if not delete_style(pref_id):
+        raise HTTPException(404, "not found")
+    return {"ok": True, "id": pref_id}
 
 @router.get("/push/vapid")
 def push_vapid():

@@ -187,10 +187,10 @@
       padding: 2rem 1rem;
     }
 
-    /* 通知开关。装成 PWA 之后才拿得到订阅，所以还带一句「先添加到主屏幕」的提示。 */
+    /* header 右上角两个按钮：说话方式（纠偏的隐私出口）、开启通知（Web Push）。 */
     .bar { display: flex; align-items: flex-start; gap: 0.75rem; }
     .bar .grow { flex: 1 1 auto; min-width: 0; }
-    #pushBtn {
+    #prefsBtn, #pushBtn {
       flex: 0 0 auto;
       margin-top: 0.1rem;
       padding: 0.35rem 0.7rem;
@@ -212,6 +212,63 @@
     }
     #pushHint[hidden] { display: none; }
 
+    .sheet[hidden] { display: none; }
+    .sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 5;
+      background: rgba(0, 0, 0, 0.35);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .sheet .panel {
+      width: 100%;
+      max-width: 40rem;
+      max-height: 70dvh;
+      overflow-y: auto;
+      background: var(--surface);
+      border-radius: 1rem 1rem 0 0;
+      padding: 1rem 1rem calc(1rem + var(--safe-bottom));
+      animation: rise 0.18s ease-out;
+    }
+    .sheet h2 { margin: 0; font-size: 0.95rem; font-weight: 650; }
+    .sheet .hint { margin: 0.3rem 0 0.9rem; color: var(--muted); font-size: 0.78rem; }
+    .sheet ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+    .sheet li {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      font-size: 0.9rem;
+    }
+    .sheet li .txt { flex: 1 1 auto; word-break: break-word; }
+    .sheet li .id { color: var(--muted); font-size: 0.72rem; display: block; margin-top: 0.15rem; }
+    .sheet li button {
+      flex: 0 0 auto;
+      border: 0;
+      background: none;
+      color: var(--danger);
+      font: inherit;
+      font-size: 0.82rem;
+      cursor: pointer;
+    }
+    .sheet .close {
+      display: block;
+      width: 100%;
+      margin-top: 1rem;
+      padding: 0.7rem;
+      border: 0;
+      border-radius: 0.85rem;
+      background: var(--bot-bg);
+      color: var(--bot-fg);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
     @keyframes rise {
       from { opacity: 0; transform: translateY(6px); }
       to { opacity: 1; transform: none; }
@@ -226,6 +283,7 @@
           <h1>nostos</h1>
           <p class="meta">最小 wake · <a href="/wakes">/wakes</a> · <a href="/memories">/memories</a> · <a href="/health">/health</a></p>
         </div>
+        <button id="prefsBtn" type="button">说话方式</button>
         <button id="pushBtn" type="button" hidden>开启通知</button>
       </div>
       <p id="pushHint" hidden></p>
@@ -239,6 +297,15 @@
         <button id="go" type="submit">发送</button>
       </form>
       <div class="err" id="err"></div>
+    </div>
+  </div>
+
+  <div class="sheet" id="prefsSheet" hidden>
+    <div class="panel" role="dialog" aria-label="说话方式">
+      <h2>说话方式</h2>
+      <p class="hint">你纠正过的说话方式，他一直照着来。记错了就删掉。</p>
+      <ul id="prefsList"></ul>
+      <button class="close" id="prefsClose" type="button">关闭</button>
     </div>
   </div>
 
@@ -340,6 +407,62 @@
         e.preventDefault();
         send();
       }
+    });
+
+    // 说话方式：纠偏偏好只在这儿露面（对话流里模型记完不宣布）。
+    const prefsSheet = document.getElementById('prefsSheet');
+    const prefsList = document.getElementById('prefsList');
+
+    async function loadPrefs() {
+      prefsList.innerHTML = '';
+      const r = await fetch('/prefs');
+      const data = await r.json();
+      const items = data.prefs || [];
+      if (!items.length) {
+        const li = document.createElement('li');
+        li.textContent = '还没有记下任何纠正。';
+        prefsList.appendChild(li);
+        return;
+      }
+      items.forEach(p => {
+        const li = document.createElement('li');
+
+        const txt = document.createElement('div');
+        txt.className = 'txt';
+        txt.textContent = p.text;
+        const id = document.createElement('span');
+        id.className = 'id';
+        id.textContent = p.id;
+        txt.appendChild(id);
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = '删除';
+        del.addEventListener('click', async () => {
+          del.disabled = true;
+          try {
+            await fetch('/prefs/' + encodeURIComponent(p.id), { method: 'DELETE' });
+            await loadPrefs();
+          } catch (ex) {
+            del.disabled = false;
+          }
+        });
+
+        li.appendChild(txt);
+        li.appendChild(del);
+        prefsList.appendChild(li);
+      });
+    }
+
+    document.getElementById('prefsBtn').addEventListener('click', () => {
+      prefsSheet.hidden = false;
+      loadPrefs().catch(e => { err.textContent = String(e); });
+    });
+    document.getElementById('prefsClose').addEventListener('click', () => {
+      prefsSheet.hidden = true;
+    });
+    prefsSheet.addEventListener('click', (e) => {
+      if (e.target === prefsSheet) prefsSheet.hidden = true;
     });
 
     // --- Web Push --------------------------------------------------------

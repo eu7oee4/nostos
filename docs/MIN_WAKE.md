@@ -44,7 +44,7 @@ curl -s http://localhost:8787/health
 
 - 带 `note`：原样投递那句写死的台词，不过模型
 - 只带 `intent`：到点走**和聊天同一条**拼装管线（`app.context.assemble`），
-  触发是 7b「没人找你，是你自己到点醒过来的」。所以他主动来找你时，profile /
+  触发是 7b「轮到你说话。没有新消息」（措辞 09-10 改过，见 issue #16 和 PROMPT_ASSEMBLY）。所以他主动来找你时，profile /
   persona / 最近对话 / 记忆召回都在，和聊天里是同一个人。细节见
   [PROMPT_ASSEMBLY.md](./PROMPT_ASSEMBLY.md)。
 

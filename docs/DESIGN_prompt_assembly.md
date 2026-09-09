@@ -84,7 +84,8 @@ PLAN §4.3 已拍板，**纠正「按节点每轮重铸对话」的误解**：
 
 - pending wakes 列表注入：后加（利于模型决定覆盖）
 - 护栏 prefs（安静时段/日上限）摘要：后加；**不是**「下一次几点」的决策者
-- preferences 纠偏层（PLAN 块2）：MVP 可先并进 persona 直写；独立层在「说一句就变了」做强时再拆，以便只炸断点②
+- ~~preferences 纠偏层（PLAN 块2）：MVP 可先并进 persona 直写；独立层在「说一句就变了」做强时再拆，以便只炸断点②~~
+  **2026-09-09 改判：一上来就拆成独立层**（`data/prefs.json` 的 `style[]`，块在 persona 之后）。并进 persona 意味着每次纠偏都要重写整个人格文件，而 PLAN §4.2 的排布本来就是两块。落地见 [PROMPT_ASSEMBLY.md](./PROMPT_ASSEMBLY.md)「纠偏层这一块」。
 
 ---
 
