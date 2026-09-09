@@ -5,6 +5,7 @@ from app.memory.store import (
     memories_dir,
     read_memory,
     recall_text,
+    safe_id,
     write_memory,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "memories_dir",
     "read_memory",
     "recall_text",
+    "safe_id",
     "write_memory",
 ]

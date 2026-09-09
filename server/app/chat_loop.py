@@ -18,6 +18,8 @@ CHAT_TOOL_NAMES = [
     "memory_list",
     "memory_read",
     "memory_write",
+    "prefs_write",
+    "prefs_list",
     "wake_set",
     "wake_list",
     "wake_cancel",
