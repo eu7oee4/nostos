@@ -1,24 +1,104 @@
 # Prompt assembly (MVP)
 
-Design: [DESIGN_prompt_assembly.md](./DESIGN_prompt_assembly.md) §9 steps **1 + 2**.
+Design: [DESIGN_prompt_assembly.md](./DESIGN_prompt_assembly.md) §9 steps **1 + 2**。
 
-## What this PR landed
+## 一次调模型长什么样
 
-- **Single pipeline** `app.context.assemble.build_messages` — cache order:
-  1. fixed system (`app/prompts/system.md`)
-  2. optional `data/user_profile.json` block
-  3. optional `data/persona.md`
-  4. dialog rows with frozen `[MM-DD HH:MM]` stamps (`created_at` × `TIMEZONE`)
-  5. recall suffix（有记忆才注入）
-  6. time-anchor suffix every turn
-  7. trigger (`user` / `wake`)
-- **Timezone** via settings / `TIMEZONE` env — **not** in profile.
-- **LLM usage** logged at INFO (`nostos.llm`) including raw cache-hit keys when the provider returns them.
-- `Trigger` + `build_messages` exported for chat_loop; wake fire can adopt later (not rewritten here).
+```
+system      固定前缀（app/prompts/system.md）
+system      【用户档案】（data/user_profile.json，缺文件整块省略）
+system      【伙伴人格 / persona】（data/persona.md，缺文件整块省略）
+user        【09-08 周二 11:24 中午】
+            我是谁
+assistant   你是眠眠，住在杭州，喜欢深夜敲代码。
+            …（段内历史，纯追加）
+system      现在浮现在你脑海里的记忆有：…（有记忆才注入）
+user        【09-08 周二 11:38 中午】
+            【距离上一条消息，过了 13 分钟】
+            地址不知道怎么写呀
+```
+
+戳的格式全场只有这一种：`MM-DD 周X HH:MM 时段`。星期是因为模型从日期反推星期
+不可靠，而"周末还是工作日"是他判断该不该打扰的依据；时段词是因为"11:38 中午"
+比"11:38"更直接落到该用什么语气上。年份逐条重复零信息，不带。
+
+**当前轮和历史轮长得一样，差别只有「距离上一条」那一行。**
+
+## 为什么要长得一样（2026-09-08 改的就是这个）
+
+模型会模仿**只在当前轮出现的那套格式**。它每轮都出现在紧贴生成边界的位置，
+看多了就变成「轮次开始的仪式」——于是他说完自己那句之后，顺手把下一条 user 轮
+也写出来。
+
+cassette 上 09-07 和 09-08 各实测到一次，形状是：
+
+```
+（正常回答……）
+
+user【09-08 周二 11:38】
+【距离上一条消息，过了 4 分钟】
+
+【回下面这条。…】
+眠眠：<他编的、还没发生的下一句>
+```
+
+角色标签 `user` 来自引擎缝隙学舌，框的内容来自注入。两次之前分别只积了
+**4 条**和 **14 条**带框的 user 轮。
+
+反过来，同一批 transcript 里每份约 50 条「只带戳」的历史轮，1990 份加起来几万次
+曝光，**他一次都没给自己的话加过戳**。
+
+结论：**戳不招模仿，框招。** 差别不在长短，在那段字是不是一个「轮次开始的仪式」
+——框里有对他说的指令 + 说话人标签，合起来就是剧本，剧本天然招续写。
+
+三条纪律因此定下（都在拼装侧）：
+
+1. **assistant 行不打戳。** user 有戳 / assistant 没戳的不对称，是最强的「别给
+   自己加框」信号。（同款拍板见 cassette `chat_loop.py:947`）
+2. **当前轮和历史轮同构。** 唯一多出来的是「距离上一条」，因为它是每轮变的量。
+3. **不写「称呼：」前缀。** `名字：台词` 是剧本格式，剧本天然招续写；说话人本来
+   就由 role 字段承担，正文里再写一遍是白送一个模仿目标。user 槽里除了她的原话
+   只剩 wake 的 `〔…〕`，两者一眼分得开。
+
+## 缓存
+
+历史行剥掉「距离」那一行 = 上一轮的字节变了，**不是纯追加**：
+
+```
+第 N-1 轮   … [u_{n-2} 干净][a_{n-2}][u_{n-1} 带距离行]
+第 N   轮   … [u_{n-2} 干净][a_{n-2}][u_{n-1} 干净][a_{n-1}][u_n 带距离行]
+                                      ↑ 断点
+```
+
+每轮重付「上一轮 user + 上一轮 assistant + 本轮」，前面全命中。按 40 条窗口算
+命中率 95%+。要做到纯追加，就得把「距离」也冻进历史（它写下就永远为真），
+代价是历史里多一行。**这一版按「历史只留戳」定的。**
+
+⚠️ 这次改动动了戳的格式（`[MM-DD HH:MM]` → `【MM-DD 周X HH:MM 时段】`）并去掉了独立的
+「此刻：…」后缀，**上线第一次会全 miss 一次**。之后回到上面那个稳态。
+「现在几点」现在就是当前轮那条戳（PLAN §6.3：时间锚 = 最新一条消息自带的戳）。
+
+## Timezone
+
+走 settings / `TIMEZONE` env，**不进 profile**。
+
+## 称呼
+
+`data/user_profile.json` 里的 `nickname` 只进【用户档案】那个 system 块，**不进对话行**
+（见上面第 3 条）。`nickname()` 没写过返回 None，**不拿 `USER_ID` 兜底**——那是运维标识（默认 `local`），当着模型的面
+拿它当称呼，等于每轮告诉他「这人叫 local」。
+
+## LLM usage
+
+`nostos.llm` INFO 打印 provider 返回的整个 usage（含 cache 命中字段）。判据：
+miss 稳定在一轮的量级 = 断点位置符合预期；miss ≈ 整个窗口 = 前缀里混进了每轮
+变的东西；hit 连续为 0 = 查隐形失效源。
 
 ## Out of scope (later)
 
-Onboarding cards / `ask_user`, episode soft/hard gates, killing random-wake script path.
+Onboarding cards / `ask_user`、会话段软/硬闸重铸、wake fire 接上这条管线
+（`schedule/scheduler.py:_generate_wake_line` 现在还是第二条装配）、
+killing random-wake script path。
 
 ## Optional local files
 
