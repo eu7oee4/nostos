@@ -4,7 +4,7 @@
 
 **English: [README.md](README.md)**
 
-**伙伴，不是助手。** 当前阶段：**min-chat**（最小可聊）——能来回说话。还没有长期记忆、主动触达、nostools。
+**伙伴，不是助手。** 当前阶段：**min-wake**——能来回说话、把长期记忆写成 markdown 文件、到点自己来找你。
 
 ---
 
@@ -16,16 +16,12 @@
 - 已安装 [Git](https://git-scm.com/) 和 [Docker Desktop](https://www.docker.com/products/docker-desktop/)（推荐用 Docker；也可用本机 Python，见文末）
 - 一个大模型 API Key（默认按 [DeepSeek](https://platform.deepseek.com/) 配置）
 
-### 1. 克隆仓库并切到可聊分支
+### 1. 克隆仓库
 
 ```bash
 git clone https://github.com/eu7oee4/nostos.git
 cd nostos
-git fetch origin
-git checkout feat/min-chat-loop
 ```
-
-> 等 PR 合并进 `main` 之后，可以改成直接 `git checkout main` / `git pull`。
 
 ### 2. 配置环境变量
 
@@ -171,16 +167,33 @@ ngrok http 8787
 
 ---
 
-## 当前能做什么（min-chat）
+## 当前能做什么（min-wake）
 
-- `GET /health`
+**聊天**
+
+- `GET /health` — 含 `has_key` / `memory_count` / `pending_wakes`
 - `GET /messages` — 当前 `USER_ID`（默认 `local`）的历史
 - `POST /chat` `{"content":"..."}` — 写入用户句 → 调模型 → 写入回复
 - SQLite：`data/nostos.sqlite`，时间戳由服务端盖
 
+**长期记忆**（详见 [MIN_MEMORY.md](docs/MIN_MEMORY.md)）
+
+- 落在 `data/memories/<USER_ID>/*.md`，人能读、能改、能导出
+- 模型自己用 `memory_write` / `memory_read` / `memory_list` 读写
+- `GET /memories`、`GET /memories/{name}` 可以直接翻
+
+**主动触达**（详见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
+
+- `POST /wakes` `{"delay_seconds":30}` 预约一次「到点来找你」
+- `GET /wakes` 看待办的；聊天里也能让他自己 `wake_set` / `wake_cancel`
+- **默认关**：`.env` 里 `PROACTIVE_ENABLED=true` 才生效
+
 ## 还没做
 
-- 记忆 md / 召回、preferences、闹钟、nostools、SSE 流式、多用户鉴权、DIY 云部署详细教程
+- 首次进入的引导（现在直接就是空聊天框）
+- 会话段重铸（长对话的 token 上限）
+- 站外触达通道（邮件 / 微信 / PWA）——现在只有站内
+- SSE 流式、多用户鉴权、DIY 云部署详细教程
 
 ## 不用 Docker 时（可选）
 
@@ -195,8 +208,11 @@ uvicorn app.main:app --app-dir server --reload --port 8787
 
 ## 文档
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [PLAN_companion.md](docs/PLAN_companion.md)（全文暂链到 cassette）
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — 结构定稿；末尾「施工纪律」是硬规矩
+- [PLAN_companion.md](docs/PLAN_companion.md) — 产品定稿（全文暂链到 cassette）
+- [DESIGN_prompt_assembly.md](docs/DESIGN_prompt_assembly.md) — 拼装 / 首次引导 / 会话段重铸的对齐稿
+- [MIN_MEMORY.md](docs/MIN_MEMORY.md) — 记忆存哪、怎么进对话
+- [MIN_WAKE.md](docs/MIN_WAKE.md) — 主动触达怎么开、怎么测
 
 ## License
 

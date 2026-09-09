@@ -4,14 +4,13 @@
 
 **中文说明（更详细）：[README-zh.md](README-zh.md)**
 
-**Companion, not assistant.** Stage: **min-chat**. No long-term memory, proactive reach-out, or nostools yet.
+**Companion, not assistant.** Stage: **min-wake** — it talks, remembers you in markdown files, and can come find you on its own.
 
 ## Quick start (computer)
 
 ```bash
 git clone https://github.com/eu7oee4/nostos.git
 cd nostos
-git fetch origin && git checkout feat/min-chat-loop   # until merged
 cp .env.example .env   # set LLM_API_KEY
 docker compose up --build
 ```
@@ -34,10 +33,23 @@ Full step-by-step: **README-zh.md**.
 
 Do not raw-port-forward home `8787` to the open internet.
 
+## What works today
+
+- `GET /health`, `GET /messages`, `POST /chat` — the talk loop, SQLite-backed
+- `GET /memories`, `GET /memories/{name}` — durable memories as markdown on disk;
+  the model reads and writes them through tool_use
+- `GET /wakes`, `POST /wakes` — proactive wakes ("it comes to find you").
+  **Off by default**: set `PROACTIVE_ENABLED=true`
+
+Not yet: onboarding, session-episode reforging, SSE streaming, multi-user auth,
+outbound channels (email / WeChat / PWA).
+
 ## Docs
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [PLAN_companion.md](docs/PLAN_companion.md)
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — 结构定稿；末尾「施工纪律」是硬规矩
+- [PLAN_companion.md](docs/PLAN_companion.md) — 产品定稿（全文在 cassette）
+- [DESIGN_prompt_assembly.md](docs/DESIGN_prompt_assembly.md) — 拼装 / 引导 / 重铸对齐稿
+- [MIN_MEMORY.md](docs/MIN_MEMORY.md) · [MIN_WAKE.md](docs/MIN_WAKE.md) — 记忆 / 主动触达
 
 ## License
 
