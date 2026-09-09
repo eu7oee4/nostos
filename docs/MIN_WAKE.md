@@ -39,6 +39,14 @@ curl -s http://localhost:8787/health
 
 也可在聊天里让伙伴 `wake_set`（需已开开关）。
 
+## 说什么
+
+- 带 `note`：原样投递那句写死的台词，不过模型
+- 只带 `intent`：到点走**和聊天同一条**拼装管线（`app.context.assemble`），
+  触发是 7b「没人找你，是你自己到点醒过来的」。所以他主动来找你时，profile /
+  persona / 最近对话 / 记忆召回都在，和聊天里是同一个人。细节见
+  [PROMPT_ASSEMBLY.md](./PROMPT_ASSEMBLY.md)。
+
 ## 还没做
 
 随机醒来策略、站外渠道（微信 / 邮件 / PWA）。

@@ -10,6 +10,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app import db
 from app.config import settings
+from app.context.assemble import Trigger, build_messages
+from app.context.scrub import scrub_reply
 from app.llm import LLMError, chat_completion
 from app.memory import recall_text
 
@@ -95,24 +97,26 @@ async def fire_wake(wake_id: int) -> None:
 
 
 async def _generate_wake_line(user_id: str, intent: str) -> str:
-    prompt = (
-        "你是 nostos，用户的 AI 伙伴。现在到了你主动来找用户的时刻。\n"
-        f"意图：{intent}\n"
-        "根据记忆写一句很短的打招呼（1～2 句），自然、不工具腔。"
-        "不要提工具、调度或系统。"
+    """到点自己开口说的那句：走**同一条**拼装管线，触发换成 7b。
+
+    原来这里是第二条装配——自己拼一段 system + 旧口径的「【当前记忆召回】」，
+    没有 profile、没有 persona、没有对话历史。后果是同一个伙伴主动来找你时，
+    人格和记忆口径跟聊天时对不上。DESIGN §2.3 点名的反条款：「不另写第二条装配
+    （复制装配管线 = 屎山源）」。
+
+    不给工具（tools=None）：主动消息不重新进入带工具的 agent loop，用架构堵死
+    「对一条提醒采取行动」，不靠模型自觉（PLAN §13 从 Raven 抄的那条）。
+    """
+    turns = await db.list_recent_turns(user_id, limit=40)
+    messages = build_messages(
+        user_id=user_id,
+        history_rows=turns,
+        recall=recall_text(user_id),
+        trigger=Trigger(kind="wake", intent=intent),
     )
-    messages = [
-        {"role": "system", "content": prompt},
-        {
-            "role": "system",
-            "content": "【当前记忆召回】\n" + recall_text(user_id),
-        },
-        {"role": "user", "content": "来找我一下吧。"},
-    ]
     try:
         msg = await chat_completion(messages, tools=None)
-        text = (msg.get("content") or "").strip()
-        return text or "嘿，我来看你啦。"
+        return scrub_reply((msg.get("content") or "").strip()) or "嘿，我来看你啦。"
     except LLMError:
         return "嘿，我来看你啦。"
 
