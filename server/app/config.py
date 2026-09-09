@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     port: int = 8787
     user_id: str = "local"
     proactive_enabled: bool = False
+    # Web Push 的 VAPID sub claim。**必须是合法 mailto:**——py_vapid 只收 mailto，
+    # 而 Apple 会校验域名：`mailto:…@localhost` 直接 403 BadJwtToken（实测）。
+    # 自托管的人应该改成自己的邮箱，见 VAPID_SUBJECT。
+    vapid_subject: str = "mailto:nostos@example.com"
+    # 通知标题。伙伴该有名字，但 persona.md 现在没有名字字段（#12 引导会补）
+    push_title: str = "nostos"
     # Display timezone for message stamps + per-turn time anchor (not in user_profile).
     timezone: str = "Asia/Shanghai"
 

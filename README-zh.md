@@ -80,12 +80,24 @@ docker compose down
 
 服务跑在**你的机器**上（笔记本或你自己的云主机）。手机里的 `localhost` 指手机自己。下面按场景选：
 
-| | 场景 | 要不要暴露到公网 |
-|---|---|---|
-| **1A** | Tailscale：电脑一直开着，出门也能聊 | 否（虚拟局域网） |
-| **1B** | 同一 Wi‑Fi，不出家门 | 否 |
-| **2** | 临时公网隧道 | 是（有链接的人都能进） |
-| **3** | **你自己**买 VPS / 云主机部署 nostos | 是（你自己的服务器） |
+| | 场景 | 收得到主动通知 | 要不要暴露到公网 |
+|---|---|---|---|
+| **1A** | Tailscale IP：出门也能聊 | ❌ | 否（虚拟局域网） |
+| **1B** | 同一 Wi‑Fi，不出家门 | ❌ | 否 |
+| **1C** | **Tailscale serve（HTTPS）** | ✅ | 否（仅 tailnet 可达） |
+| **2** | 临时公网隧道 | ✅ | 是（有链接的人都能进） |
+| **3** | **你自己**买 VPS / 云主机部署 nostos | ✅ | 是（你自己的服务器） |
+
+> ### ⚠️ 想收「它主动来找你」的通知，必须 HTTPS
+>
+> nostos 的主动触达走 **Web Push**（PWA 推送）。浏览器规定 Service Worker 只在
+> **安全上下文**里能注册——`http://192.168.x.x:8787` 和 `http://100.x.x.x:8787`
+> （Tailscale IP）**都不算**，SW 根本装不上，也就拿不到订阅。
+>
+> 所以 **1A / 1B 这两条只能用来聊天，收不到主动消息**。要那半个产品，用 **1C**。
+>
+> **iOS 还有一条**：必须用 Safari 打开、「添加到主屏幕」、再**从主屏图标打开**。
+> Safari 标签页里 iOS 不给 Web Push，页面上那个「开启通知」按钮会是灰的。
 
 **安全：** 当前没有登录。谁打开页面，谁就能聊并烧你的 API Key。
 
@@ -95,7 +107,10 @@ docker compose down
 
 `http://<电脑的IP>:8787`
 
-#### 1A. Tailscale（推荐：出门也能聊）
+#### 1A. Tailscale IP（能聊，但收不到通知）
+
+> 这条走的是 `http://100.x.x.x:8787`，**不是安全上下文，收不到主动通知**。
+> 想要通知看 [1C](#1c-tailscale-serve推荐拿真证书还能收通知)。
 
 思路：手机和电脑都加入 Tailscale，相当于始终在一个虚拟局域网里；用电脑的 **Tailscale IP**（一般是 `100.x.x.x`）访问 `8787`。电脑要保持开机并跑着 nostos。
 
@@ -108,7 +123,7 @@ docker compose down
 4. **手机缺点：** 很多环境下 **Tailscale 和「梯子」不能同时用**（都要抢 VPN 通道）。出门若必须挂梯子，手机上就会别扭。  
 5. **Mac 可以同时用梯子：** Tailscale → **Settings**，关掉 **Use Tailscale DNS settings**（不要让 Tailscale 接管 DNS），再按你的习惯连系统代理 / 梯子。
 
-#### 1B. 同一 Wi‑Fi（最简单，不出家门）
+#### 1B. 同一 Wi‑Fi（最简单，同样收不到通知）
 
 1. 手机和电脑连**同一 Wi‑Fi**（不要用访客网络；部分路由的 AP 隔离会导致互通失败）。
 2. 查电脑局域网 IP：  
@@ -116,6 +131,40 @@ docker compose down
    - 形如 `192.168.1.23`
 3. 手机打开：`http://192.168.1.23:8787`。
 4. 打不开时：查防火墙是否拦 8787、IP 是否抄错、是否真在同一网段。
+
+#### 1C. Tailscale serve（推荐：拿真证书，还能收通知）
+
+`tailscale serve` 把本机端口挂到 `https://<机器名>.<tailnet>.ts.net`，Tailscale 自动
+签**真证书**，而且**只有你自己 tailnet 里的设备够得着**，不裸奔公网。这是目前唯一
+一条「不暴露公网 + 能收主动通知」的路。
+
+```bash
+# nostos 已在 :8787 跑着
+tailscale serve --bg http://127.0.0.1:8787
+# → https://<机器名>.<tailnet>.ts.net
+```
+
+**后台要先开三样，少一个都不行**（在 https://login.tailscale.com/admin/dns ）：
+
+1. **MagicDNS** —— 证书签的就是 MagicDNS 名字
+2. **HTTPS Certificates**
+3. **Serve** —— 没开的话 `tailscale serve` 会直接报
+   `Serve is not enabled on your tailnet` 并给你一个开通链接
+
+⚠️ 只开了 Serve 的症状很误导：`tailscale serve status` 显示一切正常、代理也接上了，
+但 443 上握不了手（`SSL_ERROR_SYSCALL`），`tailscale cert <名字>` 报
+`your Tailscale account does not support getting TLS certs`。那是缺 2 或 3。
+
+⚠️ **开发机上挂梯子会劫持 `*.ts.net` 的解析**：Clash / Surge 那类 TUN 模式的
+fake-ip（`198.18.0.0/15`）会把名字解析成假 IP，本机自己访问就连不上。手机上一般
+没这问题（本来也不需要挂梯子访问 tailnet）。真要在开发机上自测，规则里加：
+
+```
+DOMAIN-SUFFIX,ts.net,DIRECT
+IP-CIDR,100.64.0.0/10,DIRECT
+```
+
+关掉：`tailscale serve --https=443 off`
 
 ### 2. 开一个临时公网隧道
 

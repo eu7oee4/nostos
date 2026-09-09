@@ -8,7 +8,7 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app import db
+from app import db, push
 from app.config import settings
 from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
@@ -94,6 +94,11 @@ async def fire_wake(wake_id: int) -> None:
     await db.add_message(uid, "assistant", text)
     await db.mark_wake_fired(wake_id)
     log.info("wake fired id=%s user=%s", wake_id, uid)
+
+    # 出站：推到用户手机上。站内那条 assistant 才是真相来源，推送是附加动作——
+    # `push.notify` 自己吞异常，推失败不影响这条 wake 已经落库、已经 fired。
+    # 不推的话「它主动来」（PLAN §1 假设 2）只有打开网页才看得见，等于没测。
+    await push.notify(uid, text)
 
 
 async def _generate_wake_line(user_id: str, intent: str) -> str:
