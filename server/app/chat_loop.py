@@ -9,6 +9,7 @@ from typing import Any
 from app import db
 from app.config import settings
 from app.context.assemble import Trigger, build_messages
+from app.context.scrub import scrub_reply
 from app.llm import chat_completion
 from app.memory import recall_text
 from app.nostools.registry import registry
@@ -103,7 +104,7 @@ async def run_chat(user_text: str) -> dict[str, Any]:
                 )
             continue
 
-        reply = (msg.get("content") or "").strip()
+        reply = scrub_reply((msg.get("content") or "").strip())
         assistant = await db.add_message(uid, "assistant", reply)
         return {
             "user_id": uid,
@@ -113,7 +114,7 @@ async def run_chat(user_text: str) -> dict[str, Any]:
         }
 
     msg = await chat_completion(messages, tools=None)
-    reply = (msg.get("content") or "").strip() or "（这轮工具次数用尽了，再说一次试试）"
+    reply = scrub_reply((msg.get("content") or "").strip()) or "（这轮工具次数用尽了，再说一次试试）"
     assistant = await db.add_message(uid, "assistant", reply)
     return {
         "user_id": uid,
