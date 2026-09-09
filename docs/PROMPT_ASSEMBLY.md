@@ -92,6 +92,28 @@ user【09-08 周二 11:38】
 （见上面第 3 条）。`nickname()` 没写过返回 None，**不拿 `USER_ID` 兜底**——那是运维标识（默认 `local`），当着模型的面
 拿它当称呼，等于每轮告诉他「这人叫 local」。
 
+## wake 走同一条管线
+
+到点自己开口那句（`schedule/scheduler.py:_generate_wake_line`）用的是同一个
+`build_messages`，只把触发换成 7b：
+
+```
+user        【09-08 周二 20:00 晚上】
+            【距离上一条消息，过了 8 小时】
+            〔没人找你，是你自己到点醒过来的。 你留的意图：check_in〕
+```
+
+- 前缀（system / profile / persona / 历史 / 召回）和聊天**逐字节相同**，所以这次
+  调用直接吃聊天那份缓存
+- 她说的话不带前缀，wake 用 `〔…〕`——user 槽里就这两种东西，一眼分得开
+- **不给工具**（`tools=None`）：主动消息不重新进入带工具的 agent loop，用架构堵死
+  「对一条提醒采取行动」，不靠模型自觉（PLAN §13 从 Raven 抄的那条）
+- 写死台词的 wake（带 `note`）仍然原样投递，不过模型
+
+⚠️ system 前缀里那段工具说明对 wake 这次调用是够不着的（没给 tools）。保持同一份
+前缀是为了共享缓存；`system.md` 已经有「不要把工具过程念给用户听」，先这样，
+真出现他念工具再单独收窄。
+
 ## LLM usage
 
 `nostos.llm` INFO 打印 provider 返回的整个 usage（含 cache 命中字段）。判据：
@@ -100,9 +122,7 @@ miss 稳定在一轮的量级 = 断点位置符合预期；miss ≈ 整个窗口
 
 ## Out of scope (later)
 
-Onboarding cards / `ask_user`、会话段软/硬闸重铸、wake fire 接上这条管线
-（`schedule/scheduler.py:_generate_wake_line` 现在还是第二条装配）、
-killing random-wake script path。
+Onboarding cards / `ask_user`、会话段软/硬闸重铸、killing random-wake script path。
 
 ## Optional local files
 
