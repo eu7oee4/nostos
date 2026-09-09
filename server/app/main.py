@@ -1,3 +1,5 @@
+import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -8,6 +10,15 @@ from app.config import settings
 from app.db import init_db
 from app.memory.store import memories_dir
 from app.schedule import start_scheduler, stop_scheduler
+
+# uvicorn 的 LOGGING_CONFIG 只给 uvicorn.* 配 handler，root 一个都没有，而 root
+# 默认 WARNING —— 不配这一下，app 侧所有 log.info 全被丢掉，包括 PLAN §15 要求
+# 「第一天就进日志」的 usage cache 字段。实测：改之前 nostos.llm / nostos.wake
+# 一条都不出现。
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s:     %(name)s %(message)s",
+)
 
 app = FastAPI(title="nostos", version="0.3.0-minwake")
 app.include_router(api_router)

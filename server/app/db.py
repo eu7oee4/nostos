@@ -80,24 +80,41 @@ async def add_message(user_id: str, role: str, content: str) -> dict[str, Any]:
 
 
 async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    """最近 limit 条，按时间正序返回。
+
+    取最近要 `ORDER BY id DESC LIMIT ?` 再翻转——写成 ASC LIMIT 取到的是**最旧**
+    的 limit 条：历史一过 limit，模型看到的窗口就冻在最早那段，新对话永远进不去
+    prompt，前端也不再显示新消息。
+    """
     async with _connect() as conn:
         cur = await conn.execute(
             "SELECT id, user_id, role, content, created_at FROM messages "
-            "WHERE user_id = ? ORDER BY id ASC LIMIT ?",
+            "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
             (user_id, limit),
         )
         rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in reversed(rows)]
 
 
-async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]:
-    """Recent turns for the model."""
+async def list_recent_turns(user_id: str, limit: int = 40) -> list[dict[str, Any]]:
+    """Recent user/assistant rows with created_at for prompt assembly."""
     msgs = await list_messages(user_id, limit=limit)
     return [
-        {"role": m["role"], "content": m["content"]}
+        {
+            "id": m["id"],
+            "role": m["role"],
+            "content": m["content"],
+            "created_at": m["created_at"],
+        }
         for m in msgs
         if m["role"] in ("user", "assistant")
     ]
+
+
+async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]:
+    """Recent turns for the model (role/content only; prefer list_recent_turns)."""
+    turns = await list_recent_turns(user_id, limit=limit)
+    return [{"role": t["role"], "content": t["content"]} for t in turns]
 
 
 async def create_wake(

@@ -1,4 +1,4 @@
-"""Chat: history + recall + memory/wake tool_use loop."""
+"""Chat: assemble pipeline + memory/wake tool_use loop."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from typing import Any
 
 from app import db
 from app.config import settings
+from app.context.assemble import Trigger, build_messages
+from app.context.scrub import scrub_reply
 from app.llm import chat_completion
 from app.memory import recall_text
 from app.nostools.registry import registry
@@ -21,18 +23,6 @@ CHAT_TOOL_NAMES = [
     "wake_cancel",
 ]
 MAX_TOOL_ROUNDS = 4
-
-SYSTEM_PROMPT = (
-    "你是 nostos，用户的 AI 伙伴（不是助手工具箱）。说话自然、简短。\n"
-    "你有长期记忆（markdown 文件）。用户说出值得长期记住的事实时，"
-    "用 memory_write 写入（短 id，如 name / hometown / preferences）；"
-    "需要核对细节时用 memory_read / memory_list。\n"
-    "你可以预约主动来找用户：wake_set（测试可用 delay_seconds；"
-    "可带 note 写死台词，或只带 intent 到点再生成）。"
-    "wake_list / wake_cancel 查看或取消。主动触达需服务开启 PROACTIVE_ENABLED。\n"
-    "不要把工具过程念给用户听；不要编造未写入的记忆。"
-    "闲聊不必强行写记忆或设 wake。"
-)
 
 
 async def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -67,19 +57,16 @@ def _parse_args(raw: str | dict[str, Any] | None) -> dict[str, Any]:
 async def run_chat(user_text: str) -> dict[str, Any]:
     uid = settings.user_id
     await db.add_message(uid, "user", user_text)
-    history = await db.history_for_llm(uid, limit=40)
+    turns = await db.list_recent_turns(uid, limit=40)
+    # Prior turns only — current user line is carried by Trigger (no duplicate).
+    prior = turns[:-1] if turns else []
 
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        *history,
-        {
-            "role": "system",
-            "content": (
-                "【当前记忆召回】（只读快照；写入请用 memory_write）\n"
-                + recall_text(uid)
-            ),
-        },
-    ]
+    messages = build_messages(
+        user_id=uid,
+        history_rows=prior,
+        recall=recall_text(uid),
+        trigger=Trigger(kind="user", text=user_text),
+    )
 
     tools = registry.openai_tools(CHAT_TOOL_NAMES)
     touched: list[str] = []
@@ -117,7 +104,7 @@ async def run_chat(user_text: str) -> dict[str, Any]:
                 )
             continue
 
-        reply = (msg.get("content") or "").strip()
+        reply = scrub_reply((msg.get("content") or "").strip())
         assistant = await db.add_message(uid, "assistant", reply)
         return {
             "user_id": uid,
@@ -127,7 +114,7 @@ async def run_chat(user_text: str) -> dict[str, Any]:
         }
 
     msg = await chat_completion(messages, tools=None)
-    reply = (msg.get("content") or "").strip() or "（这轮工具次数用尽了，再说一次试试）"
+    reply = scrub_reply((msg.get("content") or "").strip()) or "（这轮工具次数用尽了，再说一次试试）"
     assistant = await db.add_message(uid, "assistant", reply)
     return {
         "user_id": uid,

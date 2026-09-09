@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     port: int = 8787
     user_id: str = "local"
     proactive_enabled: bool = False
+    # Display timezone for message stamps + per-turn time anchor (not in user_profile).
+    timezone: str = "Asia/Shanghai"
 
 
 settings = Settings()
