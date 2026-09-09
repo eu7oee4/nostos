@@ -211,6 +211,7 @@ uvicorn app.main:app --app-dir server --reload --port 8787
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — 结构定稿；末尾「施工纪律」是硬规矩
 - [PLAN_companion.md](docs/PLAN_companion.md) — 产品定稿全文（MVP 要证伪什么、不做清单、安全合规）
 - [DESIGN_prompt_assembly.md](docs/DESIGN_prompt_assembly.md) — 拼装 / 首次引导 / 会话段重铸的对齐稿
+- [PROMPT_ASSEMBLY.md](docs/PROMPT_ASSEMBLY.md) — 一次调模型到底注入什么，和为什么长这样
 - [MIN_MEMORY.md](docs/MIN_MEMORY.md) — 记忆存哪、怎么进对话
 - [MIN_WAKE.md](docs/MIN_WAKE.md) — 主动触达怎么开、怎么测
 

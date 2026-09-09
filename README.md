@@ -49,6 +49,7 @@ outbound channels (email / WeChat / PWA).
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — 结构定稿；末尾「施工纪律」是硬规矩
 - [PLAN_companion.md](docs/PLAN_companion.md) — 产品定稿全文
 - [DESIGN_prompt_assembly.md](docs/DESIGN_prompt_assembly.md) — 拼装 / 引导 / 重铸对齐稿
+- [PROMPT_ASSEMBLY.md](docs/PROMPT_ASSEMBLY.md) — 一次调模型注入什么，和为什么
 - [MIN_MEMORY.md](docs/MIN_MEMORY.md) · [MIN_WAKE.md](docs/MIN_WAKE.md) — 记忆 / 主动触达
 
 ## License
