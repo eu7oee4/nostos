@@ -94,7 +94,9 @@ user【09-08 周二 11:38】
 
 ## LLM usage
 
-`nostos.llm` INFO 打印 provider 返回的整个 usage（含 cache 命中字段）。判据：
+`nostos.llm` INFO 打印 provider 返回的整个 usage（含 cache 命中字段）。日志级别走
+`LOG_LEVEL`（默认 INFO）——uvicorn 只给 `uvicorn.*` 配 handler，root 一个都没有，
+`main.py` 里那句 `basicConfig` 不加，app 侧所有 `log.info` 全被丢掉。判据：
 miss 稳定在一轮的量级 = 断点位置符合预期；miss ≈ 整个窗口 = 前缀里混进了每轮
 变的东西；hit 连续为 0 = 查隐形失效源。
 
