@@ -18,6 +18,8 @@ SQLite 表 `wakes`（与 `messages` 同库 `data/nostos.sqlite`）：
 
 - `wake_at` / `note`（可选写死台词）/ `intent`（无 note 时到点再生成）
 - `status`: `pending` | `fired` | `cancelled`
+- `source`: `manual`（模型 `wake_set` / `POST /wakes` 定的）| `auto`（随机醒来挑的，
+  见 [RANDOM_WAKE.md](./RANDOM_WAKE.md)）。老库自动补这列，已有行算 `manual`
 
 到点：往 `messages` 写入一条 `assistant`（站内「伙伴来找你」），**再推一条 Web Push
 到用户手机**（见下面「推出去」）。站内那条是真相来源，推送是附加动作。
@@ -63,6 +65,9 @@ curl -s http://localhost:8787/health
   推送返回 404/410 = 订阅过期，那一行**直接删掉**，留着只会每次都失败
 - **推失败绝不影响 wake**：`notify()` 自己吞异常，只记 `nostos.push` 日志。站内那条
   assistant 已经落库、wake 已经 `fired`
+- **安静时段里不推**：那条照样醒、照样生成、照样进聊天记录，只是不顶到锁屏上
+  （静默投递）。护栏管的是「几点可以吵你」，不是「几点不许存在」——细节和为什么
+  不是整条吞掉，见 [RANDOM_WAKE.md](./RANDOM_WAKE.md)
 
 ### 硬前提：HTTPS + 装到主屏
 
@@ -85,9 +90,18 @@ curl -s -X POST http://localhost:8787/wakes \
 # 锁屏等那条通知；服务端日志看 nostos.push 那行 sent/failed/dropped
 ```
 
+## 随机醒来
+
+没人叫他、他自己挑个时候来找你，是这条主路径的**补充**——时刻仍由模型 tool 定，
+随机只是补充，护栏只拒或改约。四条护栏（安静时段 / 最小间隔 / 日上限 / 刚聊过）存在
+`data/prefs.json` 的 `wake{}`，和纠偏层同一个文件。
+
+单独一份：[RANDOM_WAKE.md](./RANDOM_WAKE.md)。
+
 ## 还没做
 
-随机醒来策略（#10）、微信 / 邮件渠道（搁置，见 PLAN §4.1）。
+微信 / 邮件渠道（搁置，见 PLAN §4.1）、护栏的设置页（现在只能 `PUT /prefs/wake`，
+等 #12 一起做）。
 
 ⚠️ 已知问题：`_generate_wake_line` 生成的那句**开头几乎必带一段括号旁白**（实测 5/5），
 推送之后顶到锁屏上，用户第一眼看到的是舞台说明。见 issue #16。

@@ -25,7 +25,14 @@ async def wake_set_handler(
 
 
 async def wake_list_handler(**_kwargs: Any) -> dict[str, Any]:
-    items = await db.list_wakes(settings.user_id, status="pending")
+    """他自己定的那些。**不列随机醒来**（source=auto）。
+
+    随机醒来不是他约的，他也管不了：`wake_cancel` 掉一条 auto，下一轮聊天
+    `ensure_auto_wake` 又给他补一条回来——工具回了 ok 却什么都没变，是最难查的
+    那种。护栏和随机路径的出口在 `/wakes`、`/health`、`GET /prefs/wake`，那是
+    用户的东西，不是他的。
+    """
+    items = await db.list_wakes(settings.user_id, status="pending", source="manual")
     return {
         "ok": True,
         "proactive_enabled": settings.proactive_enabled,

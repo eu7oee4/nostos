@@ -220,7 +220,7 @@ ngrok http 8787
 
 **聊天**
 
-- `GET /health` — 含 `has_key` / `memory_count` / `pending_wakes`
+- `GET /health` — 含 `has_key` / `memory_count` / `pending_wakes` / `random_wake`
 - `GET /messages` — 当前 `USER_ID`（默认 `local`）的历史
 - `POST /chat` `{"content":"..."}` — 写入用户句 → 调模型 → 写入回复
 - SQLite：`data/nostos.sqlite`，时间戳由服务端盖
@@ -234,14 +234,24 @@ ngrok http 8787
 **主动触达**（详见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
 
 - `POST /wakes` `{"delay_seconds":30}` 预约一次「到点来找你」
-- `GET /wakes` 看待办的；聊天里也能让他自己 `wake_set` / `wake_cancel`
+- `GET /wakes` 看待办的（每行带 `source`）；聊天里也能让他自己 `wake_set` / `wake_cancel`
 - **默认关**：`.env` 里 `PROACTIVE_ENABLED=true` 才生效
+- 到点那条会推到手机上（Web Push / PWA，要 HTTPS + 加到主屏，见上面 **1C**）
+
+**随机醒来**（详见 [RANDOM_WAKE.md](docs/RANDOM_WAKE.md)）
+
+- 开着 `PROACTIVE_ENABLED` 时，除了他自己预约的，还会随机挑时候来找你
+- 四条护栏：安静时段（默认 `23:00-08:00`）/ 最小间隔 4 小时 / 每天最多 3 次 /
+  刚聊过 45 分钟内不来
+- `GET`、`PUT /prefs/wake` 调护栏（合并写入，改完立刻生效）；不想要就
+  `{"random":{"enabled":false}}`
+- 安静时段里他自己预约的那条**照样来，但不推送**——第二天打开就看见，不半夜震你
 
 ## 还没做
 
 - 首次进入的引导（现在直接就是空聊天框）
 - 会话段重铸（长对话的 token 上限）
-- 站外触达通道（邮件 / 微信 / PWA）——现在只有站内
+- 微信 / 邮件渠道（站外现在只有 Web Push / PWA，见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
 - SSE 流式、多用户鉴权、DIY 云部署详细教程
 
 ## 不用 Docker 时（可选）
