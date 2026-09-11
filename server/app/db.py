@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -14,7 +14,35 @@ from app.config import settings
 DB_NAME = "nostos.sqlite"
 
 # wakes 的列清单只写一份：加一列时不用四处找 SELECT
-WAKE_COLS = "id, user_id, wake_at, note, intent, status, source, created_at, fired_at"
+WAKE_COLS = "id, user_id, wake_at, note, intent, status, source, reason, created_at, fired_at"
+
+# wakes 表本体单独拎出来：迁移（重建表）和首建共用同一份定义，两处不会漂。
+#
+# status 四态：
+#   pending    等着开火
+#   fired      开过火了，fired_at 是真实开火时刻
+#   cancelled  **人**取消的：用户 / 模型 wake_cancel、用户把随机关掉
+#   skipped    **系统**没让它开：护栏挡了（quiet_hours / daily_cap / …）、停机期间
+#              过期（missed）、已武装那条不再合规被重挑（repick）
+# cancelled 和 skipped 分开，是 Raven 那条「失败降级要留痕」：静默失败和有意的
+# 降级，差别就在有没有留痕。以前两种都记成 cancelled，事后分不清是人不要还是
+# 系统没给。reason 是短 slug，只在 cancelled / skipped 时有值。
+WAKES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS wakes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    wake_at TEXT NOT NULL,
+    note TEXT,
+    intent TEXT NOT NULL DEFAULT 'check_in',
+    status TEXT NOT NULL CHECK (status IN ('pending', 'fired', 'cancelled', 'skipped')),
+    -- manual = 模型 wake_set / POST /wakes 定的；auto = 随机醒来挑的（#10）。
+    -- 护栏只数 auto 那些，manual 不受日上限/最小间隔约束。
+    source TEXT NOT NULL DEFAULT 'manual',
+    reason TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    fired_at TEXT
+);
+"""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -26,20 +54,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_created
     ON messages (user_id, created_at, id);
-
-CREATE TABLE IF NOT EXISTS wakes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    wake_at TEXT NOT NULL,
-    note TEXT,
-    intent TEXT NOT NULL DEFAULT 'check_in',
-    status TEXT NOT NULL CHECK (status IN ('pending', 'fired', 'cancelled')),
-    -- manual = 模型 wake_set / POST /wakes 定的；auto = 随机醒来挑的（#10）。
-    -- 护栏只数 auto 那些，manual 不受日上限/最小间隔约束。
-    source TEXT NOT NULL DEFAULT 'manual',
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    fired_at TEXT
-);
+""" + WAKES_TABLE_SQL + """
 CREATE INDEX IF NOT EXISTS idx_wakes_user_status_at
     ON wakes (user_id, status, wake_at);
 CREATE INDEX IF NOT EXISTS idx_wakes_user_source_fired
@@ -68,14 +83,19 @@ def db_path() -> Path:
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
-    """补列 + 建表。老库（#10 之前建的）的 wakes 没有 source，这里补上。
+    """补列 + 建表 + 必要时重建 wakes。**只在启动时跑一次**（见 `_connect`）。
 
     `CREATE TABLE IF NOT EXISTS` 对已存在的表一个字都不改，所以升级上来的库必须
-    显式 ALTER。**补列要在 executescript 之前**：SCHEMA 里那个
-    `idx_wakes_user_source_fired` 索引引用了 source，列还没有时整段脚本直接
-    `OperationalError: no such column: source`，连表都建不完（实测）。
+    显式迁移。三代库：
 
-    新库走的是另一条：表还不存在 → table_info 空 → 跳过 ALTER，建表时就带着列。
+    1. #10 之前：wakes 没有 source → ALTER 补列。**补列要在 executescript 之前**：
+       SCHEMA 里那个 `idx_wakes_user_source_fired` 索引引用了 source，列还没有时
+       整段脚本直接 `OperationalError: no such column: source`（实测）
+    2. #10 之后、这次之前：status 的 CHECK 只认三态、没有 reason 列。SQLite 改不了
+       CHECK，只能重建：改名 → 按新定义建 → 搬数据 → 删旧表。判据看 sqlite_master
+       里存的建表 SQL 有没有 `'skipped'`。旧索引跟着旧表一起被 DROP，
+       下面的 executescript 再按新表建回来
+    3. 新库：表不存在 → 两步都跳过，建表时就是完整的
     """
     cur = await conn.execute("PRAGMA table_info(wakes)")
     cols = {row[1] for row in await cur.fetchall()}
@@ -83,7 +103,32 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
         await conn.execute(
             "ALTER TABLE wakes ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'"
         )
+        cols.add("source")
+
+    if cols:
+        cur = await conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'wakes'"
+        )
+        row = await cur.fetchone()
+        create_sql = (row[0] if row else "") or ""
+        if "'skipped'" not in create_sql:
+            await _rebuild_wakes(conn)
+
     await conn.executescript(SCHEMA)
+    await conn.commit()
+
+
+async def _rebuild_wakes(conn: aiosqlite.Connection) -> None:
+    """把旧 wakes 按新定义重建一遍，数据原样搬过来（reason 全空）。"""
+    await conn.execute("ALTER TABLE wakes RENAME TO wakes_old")
+    await conn.execute(WAKES_TABLE_SQL)
+    await conn.execute(
+        "INSERT INTO wakes (id, user_id, wake_at, note, intent, status, source, "
+        "created_at, fired_at) "
+        "SELECT id, user_id, wake_at, note, intent, status, source, created_at, fired_at "
+        "FROM wakes_old"
+    )
+    await conn.execute("DROP TABLE wakes_old")
     await conn.commit()
 
 
@@ -101,17 +146,38 @@ def _parse_ts(raw: str | None) -> datetime | None:
 
 
 async def init_db() -> None:
+    """启动时跑一次：WAL + 建表/迁移。
+
+    WAL 是让「聊天在写、wake 同时也在写」不撞 `database is locked` 的前提：
+    默认的 rollback journal 下读写互斥，两个连接一个在 commit 另一个就得等；
+    WAL 下读不挡写、写不挡读，只剩写写互斥，靠 busy_timeout 排队。
+    journal_mode 是**库文件**的属性，设一次永久生效。
+    """
     async with aiosqlite.connect(db_path()) as conn:
+        await conn.execute("PRAGMA journal_mode=WAL")
         await _ensure_schema(conn)
 
 
 @asynccontextmanager
 async def _connect() -> AsyncIterator[aiosqlite.Connection]:
-    """Open DB once, ensure schema, close on exit (survives wipe while up)."""
-    conn = await aiosqlite.connect(db_path())
+    """开一个连接，用完关。
+
+    **不再每次都跑 `_ensure_schema`**：那是 PRAGMA + 整段 executescript，每条查询
+    付一遍，而且 executescript 自带 COMMIT 会打断事务语义。只有库文件不见了
+    （运行中被人删掉）才补建一次——原来「survives wipe while up」那条保留。
+
+    busy_timeout 是连接属性，每个连接都要设：写写相撞时等 5 秒再报 locked，
+    而不是立刻炸。
+    """
+    path = db_path()
+    fresh = not path.is_file()
+    conn = await aiosqlite.connect(path)
     conn.row_factory = aiosqlite.Row
     try:
-        await _ensure_schema(conn)
+        await conn.execute("PRAGMA busy_timeout=5000")
+        if fresh:
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await _ensure_schema(conn)
         yield conn
     finally:
         await conn.close()
@@ -234,25 +300,124 @@ async def list_wakes(
         return [dict(r) for r in await cur.fetchall()]
 
 
-async def mark_wake_fired(wake_id: int) -> None:
-    async with _connect() as conn:
-        await conn.execute(
-            "UPDATE wakes SET status = 'fired', "
-            "fired_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
-            (wake_id,),
-        )
-        await conn.commit()
+async def fire_wake_tx(wake_id: int, user_id: str, text: str) -> dict[str, Any] | None:
+    """开火落库：标 fired + 写那条 assistant，**一个事务**。
 
+    以前是两个连接两步：先 add_message 再 mark_wake_fired。中间进程挂掉，消息
+    落了、状态还是 pending，重启 `restore_pending_wakes` 再开一次火——用户收到
+    两条一样的「我来看你啦」。这就是那个「外部已成功、本地未落库」的窗口，
+    只不过外部是 messages 表。
 
-async def mark_wake_cancelled(wake_id: int) -> bool:
+    `WHERE status = 'pending'` 兼做幂等：rowcount 为 0 = 别人已经开过了（或被取消），
+    整个事务回滚、返回 None，一个字都不写。
+    """
     async with _connect() as conn:
         cur = await conn.execute(
-            "UPDATE wakes SET status = 'cancelled' "
+            "UPDATE wakes SET status = 'fired', "
+            "fired_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
             "WHERE id = ? AND status = 'pending'",
             (wake_id,),
         )
+        if cur.rowcount == 0:
+            await conn.rollback()
+            return None
+        cur = await conn.execute(
+            "INSERT INTO messages (user_id, role, content) VALUES (?, 'assistant', ?)",
+            (user_id, text),
+        )
+        msg_id = cur.lastrowid
+        await conn.commit()
+        cur = await conn.execute(
+            "SELECT id, user_id, role, content, created_at FROM messages WHERE id = ?",
+            (msg_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def _close_wake(wake_id: int, status: str, reason: str | None) -> bool:
+    if status not in ("cancelled", "skipped"):
+        raise ValueError(f"bad terminal status: {status}")
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "UPDATE wakes SET status = ?, reason = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (status, reason, wake_id),
+        )
         await conn.commit()
         return cur.rowcount > 0
+
+
+async def mark_wake_cancelled(wake_id: int, reason: str | None = None) -> bool:
+    """**人**取消的：wake_cancel、用户关掉随机。"""
+    return await _close_wake(wake_id, "cancelled", reason)
+
+
+async def mark_wake_skipped(wake_id: int, reason: str) -> bool:
+    """**系统**没让它开：护栏挡了、停机过期、重挑。reason 必填，这就是留痕本身。"""
+    return await _close_wake(wake_id, "skipped", reason)
+
+
+async def wake_stats(user_id: str, *, days: int = 7, reply_hours: int = 6) -> dict[str, Any]:
+    """PLAN §11 候选指标里「它先开口的接受率」：最近 `days` 天开过火的 wake，
+    有多少条在 `reply_hours` 小时内等到了用户的下一句。
+
+    数据本来就在库里（fired_at + 下一条 user 的 created_at），只是以前没人算。
+    顺带把 skipped / cancelled 按 reason 分桶——护栏到底在挡什么，看这儿。
+    """
+    since = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).strftime("%Y-%m-%dT%H:%M:%S")
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT source, fired_at FROM wakes "
+            "WHERE user_id = ? AND status = 'fired' AND fired_at >= ?",
+            (user_id, since),
+        )
+        fired = [dict(r) for r in await cur.fetchall()]
+
+        replied = 0
+        by_source: dict[str, dict[str, int]] = {}
+        for w in fired:
+            src = w["source"] or "manual"
+            bucket = by_source.setdefault(src, {"fired": 0, "replied": 0})
+            bucket["fired"] += 1
+            start = w["fired_at"]
+            end_dt = _parse_ts(start)
+            end = (
+                (end_dt + timedelta(hours=reply_hours)).strftime("%Y-%m-%dT%H:%M:%S")
+                if end_dt
+                else start
+            )
+            cur = await conn.execute(
+                "SELECT 1 FROM messages WHERE user_id = ? AND role = 'user' "
+                "AND created_at > ? AND created_at < ? LIMIT 1",
+                (user_id, start, end),
+            )
+            if await cur.fetchone():
+                replied += 1
+                bucket["replied"] += 1
+
+        cur = await conn.execute(
+            "SELECT status, COALESCE(reason, '') AS reason, COUNT(*) AS n FROM wakes "
+            "WHERE user_id = ? AND status IN ('skipped', 'cancelled') AND created_at >= ? "
+            "GROUP BY status, reason",
+            (user_id, since),
+        )
+        closed = {
+            f"{r['status']}:{r['reason'] or '-'}": int(r["n"]) for r in await cur.fetchall()
+        }
+
+    n = len(fired)
+    return {
+        "days": days,
+        "reply_window_hours": reply_hours,
+        "fired": n,
+        "replied": replied,
+        "acceptance": round(replied / n, 3) if n else None,
+        "by_source": by_source,
+        "closed": closed,
+    }
 
 
 async def count_pending_wakes(

@@ -25,7 +25,7 @@ Full step-by-step: **README-zh.md**.
    - **1A Tailscale** — Mac stays on; chat via `http://<tailscale-ip>:8787`. Phones often can’t run Tailscale + another VPN at once; on Mac, turn off **Use Tailscale DNS settings** to keep a system proxy.  
    - **1B Same Wi‑Fi** — `http://<LAN-IP>:8787` at home.
 
-2. **Temporary public tunnel** (link = key; no auth)  
+2. **Temporary public tunnel** — set `ACCESS_TOKEN` in `.env` first, then open `https://…/?token=<it>` once on the phone  
    - **2A cloudflared** (quick try): `cloudflared tunnel --url http://localhost:8787`  
    - **2B ngrok**: `ngrok http 8787`
 
@@ -39,10 +39,13 @@ Do not raw-port-forward home `8787` to the open internet.
 - `GET /memories`, `GET /memories/{name}` — durable memories as markdown on disk;
   the model reads and writes them through tool_use
 - `GET /wakes`, `POST /wakes` — proactive wakes ("it comes to find you").
-  **Off by default**: set `PROACTIVE_ENABLED=true`
+  **Off by default**: set `PROACTIVE_ENABLED=true`. Delivered as Web Push (PWA).
+- `GET /stats` — acceptance rate of wakes (did the user reply within 6h), skipped/cancelled by reason
+- `ACCESS_TOKEN` — single-token gate; required before any public URL
+- `pytest` — tests under `server/tests/` (`pip install -r server/requirements-dev.txt`)
 
-Not yet: onboarding, session-episode reforging, SSE streaming, multi-user auth,
-outbound channels (email / WeChat / PWA).
+Not yet: onboarding, session-episode reforging, SSE streaming, multi-user,
+email / WeChat channels, backups.
 
 ## Docs
 

@@ -6,6 +6,15 @@ from typing import Any, Awaitable, Callable, Dict
 
 Handler = Callable[..., Awaitable[Any] | Any]
 
+# 工具跑一次会碰到什么。执行入口（chat_loop._run_tool）认这个字段：
+#   none / read   只看，随便调
+#   write         改本机数据（记忆、纠偏、wake），每次调用记 INFO 留痕
+#   outbound      往外面发东西（邮件、给别人发消息）。**人批之前不许跑**——
+#                 现在没有批准通道，所以一律拒绝并记 WARNING。这是 ARCHITECTURE
+#                 「出站副作用：人批 + 留痕」那条的 stub，等第一个真 outbound
+#                 工具进来时把批准通道接到这里，别绕过去
+SIDE_EFFECTS = ("none", "read", "write", "outbound")
+
 
 @dataclass
 class ToolSpec:
@@ -13,9 +22,16 @@ class ToolSpec:
     description: str
     builtin: bool = False
     enabled: bool = False
-    side_effect: str = "none"  # none | read | write | outbound
+    side_effect: str = "none"  # 见 SIDE_EFFECTS
     parameters: dict[str, Any] = field(default_factory=dict)
     handler: Handler | None = None
+
+    def __post_init__(self) -> None:
+        if self.side_effect not in SIDE_EFFECTS:
+            raise ValueError(
+                f"tool {self.name}: side_effect must be one of {SIDE_EFFECTS}, "
+                f"got {self.side_effect!r}"
+            )
 
 
 @dataclass

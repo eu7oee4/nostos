@@ -99,7 +99,13 @@ docker compose down
 > **iOS 还有一条**：必须用 Safari 打开、「添加到主屏幕」、再**从主屏图标打开**。
 > Safari 标签页里 iOS 不给 Web Push，页面上那个「开启通知」按钮会是灰的。
 
-**安全：** 当前没有登录。谁打开页面，谁就能聊并烧你的 API Key。
+**安全：** 没有账号系统，只有一道门：`.env` 里的 `ACCESS_TOKEN`。**留空 = 没门**，
+谁打开页面谁就能聊并烧你的 API Key——1A / 1B / 1C 在自己的局域网 / tailnet 里可以这样；
+**2 和 3 走公网，必须填**一个长随机串（`openssl rand -hex 24`）。填了之后：
+
+- 手机第一次打开 `https://…/?token=<那个串>`，服务端种 cookie，之后这台设备不用再带
+- curl / 脚本：`-H 'Authorization: Bearer <那个串>'`
+- 没带或带错：全部接口 401（`/health` 也在门内；PWA 的 `sw.js` / `manifest.json` / 图标不在）
 
 ### 1. 用「电脑的局域网 / 虚拟局域网 IP」访问
 
@@ -168,7 +174,7 @@ IP-CIDR,100.64.0.0/10,DIRECT
 
 ### 2. 开一个临时公网隧道
 
-适合：临时演示、或不想装 Tailscale。会得到一个 **https** 链接；**有链接约等于有钥匙**，用完关掉，别发群。
+适合：临时演示、或不想装 Tailscale。会得到一个 **https** 链接；**先填 `ACCESS_TOKEN`**（见上面「安全」），不然有链接约等于有钥匙。用完关掉，别发群。
 
 临时试用优先 **2A cloudflared**（步骤少，可不注册）。已有 ngrok 账号再用 **2B**。
 
@@ -212,7 +218,7 @@ ngrok http 8787
 
 当前仓库**还没有**一键安装脚本 / 官方镜像文档；会按上面 compose 自行部署。等文档补全前，不熟 Linux 的用户更建议先用 **1A / 1B / 2**。
 
-同样没有登录：公网能打开 = 别人也能聊、烧你的 key。上公网前至少要自己加一层门禁（反向代理 Basic Auth、Tailscale 只听内网、或以后仓库提供的 token），不要裸奔。
+公网能打开 = 别人也能聊、烧你的 key。上公网前**必须填 `ACCESS_TOKEN`**（见上面「安全」）；反向代理再加一层 Basic Auth 也不冲突。不要裸奔。
 
 ---
 
@@ -221,9 +227,12 @@ ngrok http 8787
 **聊天**
 
 - `GET /health` — 含 `has_key` / `memory_count` / `pending_wakes` / `random_wake`
+- `GET /stats` — 「它先开口」的接受率（最近 7 天开火的 wake 有多少条 6 小时内等到回话）、
+  被护栏挡掉 / 停机漏掉的按原因分桶
 - `GET /messages` — 当前 `USER_ID`（默认 `local`）的历史
 - `POST /chat` `{"content":"..."}` — 写入用户句 → 调模型 → 写入回复
-- SQLite：`data/nostos.sqlite`，时间戳由服务端盖
+- SQLite：`data/nostos.sqlite`（WAL），时间戳由服务端盖；同一用户一次只跑一轮
+- 日志每行带轮 id `[chat-…]` / `[wake-…]`，一轮的拼装、调模型、工具、落库 grep 一个 id 全在
 
 **长期记忆**（详见 [MIN_MEMORY.md](docs/MIN_MEMORY.md)）
 
@@ -234,7 +243,9 @@ ngrok http 8787
 **主动触达**（详见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
 
 - `POST /wakes` `{"delay_seconds":30}` 预约一次「到点来找你」
-- `GET /wakes` 看待办的（每行带 `source`）；聊天里也能让他自己 `wake_set` / `wake_cancel`
+- `GET /wakes` 看待办的（每行带 `source`；`?status=` 看全部，`skipped` 行带 `reason`）；
+  聊天里也能让他自己 `wake_set` / `wake_cancel`
+- 重启时过点超过 5 分钟的不补发，记 `skipped(missed)`——停机三天不会一口气推三天的
 - **默认关**：`.env` 里 `PROACTIVE_ENABLED=true` 才生效
 - 到点那条会推到手机上（Web Push / PWA，要 HTTPS + 加到主屏，见上面 **1C**）
 
@@ -252,7 +263,17 @@ ngrok http 8787
 - 首次进入的引导（现在直接就是空聊天框）
 - 会话段重铸（长对话的 token 上限）
 - 微信 / 邮件渠道（站外现在只有 Web Push / PWA，见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
-- SSE 流式、多用户鉴权、DIY 云部署详细教程
+- SSE 流式、多用户（现在只有单个 `ACCESS_TOKEN`）、DIY 云部署详细教程
+- 备份（含真还原演习）
+
+## 跑测试
+
+```bash
+pip install -r server/requirements-dev.txt
+pytest            # 或 make test；配置在根目录 pytest.ini
+```
+
+测试自己起临时 `DATA_DIR`，不碰 `data/`，不需要 API key。CI 每次 push 都跑。
 
 ## 不用 Docker 时（可选）
 

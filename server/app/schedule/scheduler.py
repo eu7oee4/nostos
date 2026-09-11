@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -13,6 +13,7 @@ from app.config import settings
 from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
 from app.llm import LLMError, chat_completion
+from app.locks import turn_lock
 from app.memory import recall_text
 from app.prefs import load_wake
 from app.schedule.policy import (
@@ -22,8 +23,17 @@ from app.schedule.policy import (
     random_on,
     slot_allowed,
 )
+from app.trace import new_turn
 
 log = logging.getLogger("nostos.wake")
+
+# 过了点多久还算「现在开」。APScheduler 自己那条 misfire_grace_time 只管进程活着
+# 时的误点；重启后 `restore_pending_wakes` 走的是我们自己的路，得用同一个数。
+# 停机三天再起来，三天前那条「嘿，我来看你啦」不该再推——那不是主动来找你，是
+# 迟到的机器。
+MISFIRE_GRACE_SECONDS = 300
+
+FALLBACK_WAKE_LINE = "嘿，我来看你啦。"
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -41,8 +51,6 @@ def parse_wake_at(
         sec = float(delay_seconds)
         if sec < 0:
             raise ValueError("delay_seconds must be >= 0")
-        from datetime import timedelta
-
         return _utc_now() + timedelta(seconds=sec)
     if not wake_at or not str(wake_at).strip():
         raise ValueError("provide wake_at (ISO UTC) or delay_seconds")
@@ -51,6 +59,18 @@ def parse_wake_at(
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def classify_restore(
+    when: datetime,
+    now: datetime,
+    grace_seconds: int = MISFIRE_GRACE_SECONDS,
+) -> Literal["arm", "missed"]:
+    """重启时一条 pending 该怎么处理：还没到点 / 过点但在宽限内 → 挂回去（过点的
+    立刻开）；过点超过宽限 → skipped(missed)。纯函数，测试直接打这里。"""
+    if when <= now - timedelta(seconds=grace_seconds):
+        return "missed"
+    return "arm"
 
 
 def _wake_key(wake_id: int) -> str:
@@ -69,7 +89,7 @@ def _arm_in_scheduler(wake_id: int, when: datetime) -> None:
         args=[wake_id],
         id=_wake_key(wake_id),
         replace_existing=True,
-        misfire_grace_time=300,
+        misfire_grace_time=MISFIRE_GRACE_SECONDS,
     )
 
 
@@ -92,29 +112,44 @@ async def fire_wake(wake_id: int) -> None:
 
     uid = row["user_id"]
     source = (row.get("source") or "manual").strip()
-    wake_prefs = load_wake()
+    new_turn("wake")
 
-    # 随机醒来到点还要**再过一遍护栏**：武装的那一刻合规，不代表现在还合规
-    # （中间用户可能刚聊过、或已经被别的随机醒来吃掉了今天的额度）。
-    # 挡下来就作废重挑，**一个 token 都不烧**——护栏挡掉的那条根本不调模型。
-    if source == "auto":
-        ok, reason = await can_fire_now(uid, wake_prefs)
-        if not ok:
-            await db.mark_wake_cancelled(wake_id)
-            log.info("auto wake id=%s dropped before generating: %s", wake_id, reason)
-            await ensure_auto_wake(uid)
+    # 整轮持锁（app/locks.py）：正在聊天就等那轮说完再开口，别插进对话中间。
+    # 等锁期间这条可能被取消了，所以拿到锁之后护栏和状态都要**重看一遍**。
+    async with turn_lock(uid):
+        fresh = await db.get_wake(wake_id)
+        if not fresh or fresh["status"] != "pending":
+            log.info("wake id=%s closed while waiting for turn lock", wake_id)
             return
 
-    note = (row.get("note") or "").strip()
-    intent = (row.get("intent") or "check_in").strip()
+        wake_prefs = load_wake()
 
-    if note:
-        text = note
-    else:
-        text = await _generate_wake_line(uid, intent)
+        # 随机醒来到点还要**再过一遍护栏**：武装的那一刻合规，不代表现在还合规
+        # （中间用户可能刚聊过、或已经被别的随机醒来吃掉了今天的额度）。
+        # 挡下来就记 skipped + 原因、重挑，**一个 token 都不烧**。
+        if source == "auto":
+            ok, reason = await can_fire_now(uid, wake_prefs)
+            if not ok:
+                await db.mark_wake_skipped(wake_id, reason)
+                log.info("auto wake id=%s skipped before generating: %s", wake_id, reason)
+                await ensure_auto_wake(uid)
+                return
 
-    await db.add_message(uid, "assistant", text)
-    await db.mark_wake_fired(wake_id)
+        note = (fresh.get("note") or "").strip()
+        intent = (fresh.get("intent") or "check_in").strip()
+
+        if note:
+            text = note
+        else:
+            text = await _generate_wake_line(uid, intent)
+
+        # 标 fired + 写消息是一个事务（db.fire_wake_tx）。返回 None = 这条已经不是
+        # pending 了（并发开火 / 刚被取消），什么都没写，也不推。
+        delivered = await db.fire_wake_tx(wake_id, uid, text)
+
+    if delivered is None:
+        log.warning("wake id=%s not pending at commit; nothing delivered", wake_id)
+        return
     log.info("wake fired id=%s user=%s source=%s", wake_id, uid, source)
 
     # 出站：推到用户手机上。站内那条 assistant 才是真相来源，推送是附加动作——
@@ -144,6 +179,8 @@ async def _generate_wake_line(user_id: str, intent: str) -> str:
 
     不给工具（tools=None）：主动消息不重新进入带工具的 agent loop，用架构堵死
     「对一条提醒采取行动」，不靠模型自觉（PLAN §13 从 Raven 抄的那条）。
+
+    模型挂了就用兜底那句，但**要记日志**：静默降级和有意的降级，差别就在留痕。
     """
     turns = await db.list_recent_turns(user_id, limit=40)
     messages = build_messages(
@@ -154,9 +191,14 @@ async def _generate_wake_line(user_id: str, intent: str) -> str:
     )
     try:
         msg = await chat_completion(messages, tools=None)
-        return scrub_reply((msg.get("content") or "").strip()) or "嘿，我来看你啦。"
-    except LLMError:
-        return "嘿，我来看你啦。"
+    except LLMError as e:
+        log.warning("wake line generation failed (%s); using fallback line", e)
+        return FALLBACK_WAKE_LINE
+    text = scrub_reply((msg.get("content") or "").strip())
+    if not text:
+        log.warning("wake line came back empty after scrub; using fallback line")
+        return FALLBACK_WAKE_LINE
+    return text
 
 
 async def schedule_wake(
@@ -173,6 +215,10 @@ async def schedule_wake(
     `source="manual"`（模型 `wake_set` / `POST /wakes`）**不过护栏**：时刻由模型
     定，APScheduler 只负责到点执行（DESIGN §6）。安静时段对它唯一的影响是到点
     那条不推送，见 `fire_wake`。`source="auto"` 只由 `ensure_auto_wake` 用。
+
+    到点已过的（delay 0 / 过去的时刻）**不在这里 inline 开火**，挂进调度器让它
+    下一拍就跑。原因是锁：模型在聊天里 `wake_set(delay_seconds=0)` 时，聊天这轮
+    正持着 turn 锁，inline 调 `fire_wake` 会在同一把锁上死等。
     """
     if not settings.proactive_enabled:
         return {
@@ -199,22 +245,19 @@ async def schedule_wake(
     )
     wake_id = int(row["id"])
 
-    if when <= _utc_now():
-        await fire_wake(wake_id)
-        fresh = await db.get_wake(wake_id)
-        return {"ok": True, "wake": fresh, "fired_immediately": True}
-
-    _arm_in_scheduler(wake_id, when)
-    return {"ok": True, "wake": row, "fired_immediately": False}
+    now = _utc_now()
+    due_now = when <= now
+    _arm_in_scheduler(wake_id, max(when, now))
+    return {"ok": True, "wake": row, "due_now": due_now}
 
 
-async def cancel_pending_auto(user_id: str | None = None) -> int:
-    """把待开火的随机醒来全撤掉（重挑之前、或用户把随机关掉时）。"""
+async def cancel_pending_auto(user_id: str | None = None, reason: str | None = None) -> int:
+    """把待开火的随机醒来全撤掉（用户把随机关掉时）。"""
     uid = user_id or settings.user_id
     n = 0
     for row in await db.list_pending_auto_wakes(uid):
         wid = int(row["id"])
-        if await db.mark_wake_cancelled(wid):
+        if await db.mark_wake_cancelled(wid, reason):
             disarm_wake(wid)
             n += 1
     return n
@@ -239,7 +282,7 @@ async def ensure_auto_wake(user_id: str | None = None) -> dict[str, Any]:
 
     on, reason = random_on(wake_prefs)
     if not on:
-        n = await cancel_pending_auto(uid)
+        n = await cancel_pending_auto(uid, reason)
         return {"ok": True, "armed": False, "detail": reason, "cancelled": n}
 
     now = _utc_now()
@@ -256,7 +299,8 @@ async def ensure_auto_wake(user_id: str | None = None) -> dict[str, Any]:
         if still_ok:
             keep = row
             _arm_in_scheduler(wid, when)  # 重启后要重新挂进 APScheduler；幂等
-        elif await db.mark_wake_cancelled(wid):
+        elif await db.mark_wake_skipped(wid, "repick"):
+            # 系统重挑的，不是人取消的：记 skipped(repick)
             disarm_wake(wid)
 
     if keep is not None:
@@ -284,25 +328,34 @@ async def reload_wake_policy(user_id: str | None = None) -> dict[str, Any]:
     return await ensure_auto_wake(user_id)
 
 
-async def restore_pending_wakes() -> int:
-    """Re-arm pending wakes after process start."""
+async def restore_pending_wakes() -> dict[str, int]:
+    """重启后把 pending 挂回调度器。
+
+    过点超过 MISFIRE_GRACE_SECONDS 的**不补开**，记 skipped(missed)。以前是
+    「过点的全部立刻开火」：服务器停三天再起来，用户一口气收到停机期间攒的每一条
+    推送，而且每条都要调一次模型。宽限内的挂到「现在」，下一拍就开。
+    """
     if not settings.proactive_enabled:
-        return 0
+        return {"armed": 0, "missed": 0}
     rows = await db.list_wakes(settings.user_id, status="pending", limit=200)
-    armed = 0
+    armed = missed = 0
     now = _utc_now()
     for row in rows:
         wake_id = int(row["id"])
         try:
             when = parse_wake_at(wake_at=row["wake_at"])
         except ValueError:
+            await db.mark_wake_skipped(wake_id, "bad_wake_at")
+            log.warning("wake id=%s has unparsable wake_at %r; skipped", wake_id, row["wake_at"])
             continue
-        if when <= now:
-            await fire_wake(wake_id)
+        if classify_restore(when, now) == "missed":
+            await db.mark_wake_skipped(wake_id, "missed")
+            log.info("wake id=%s missed while down (due %s); skipped", wake_id, row["wake_at"])
+            missed += 1
         else:
-            _arm_in_scheduler(wake_id, when)
+            _arm_in_scheduler(wake_id, max(when, now))
             armed += 1
-    return armed
+    return {"armed": armed, "missed": missed}
 
 
 async def start_scheduler() -> None:
@@ -312,11 +365,12 @@ async def start_scheduler() -> None:
     _scheduler = AsyncIOScheduler(timezone=timezone.utc)
     _scheduler.start()
     if settings.proactive_enabled:
-        n = await restore_pending_wakes()
+        restored = await restore_pending_wakes()
         auto = await ensure_auto_wake(settings.user_id)
         log.info(
-            "wake scheduler started; restored_pending=%s auto=%s(%s)",
-            n,
+            "wake scheduler started; restored=%s missed=%s auto=%s(%s)",
+            restored["armed"],
+            restored["missed"],
             auto.get("armed"),
             auto.get("detail"),
         )

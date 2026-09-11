@@ -152,11 +152,19 @@ user        【09-08 周二 20:00 晚上】
 
 ## LLM usage
 
-`nostos.llm` INFO 打印 provider 返回的整个 usage（含 cache 命中字段）。日志级别走
+`nostos.llm` INFO 每次调用打一行：`llm call ms=<耗时> tools=yes|no attempts=<1|2> usage {…}`，
+usage 是 provider 返回的整个对象（含 cache 命中字段）。日志级别走
 `LOG_LEVEL`（默认 INFO）——uvicorn 只给 `uvicorn.*` 配 handler，root 一个都没有，
 `main.py` 里那句 `basicConfig` 不加，app 侧所有 `log.info` 全被丢掉。判据：
 miss 稳定在一轮的量级 = 断点位置符合预期；miss ≈ 整个窗口 = 前缀里混进了每轮
 变的东西；hit 连续为 0 = 查隐形失效源。
+
+每行前面的 `[chat-xxxxxxxx]` / `[wake-xxxxxxxx]` 是轮 id（`app/trace.py`）：一轮
+聊天里工具循环调了几次模型、每次多少 token，grep 这个 id 全在一起。轮末
+`nostos.chat` 再打一行汇总：`turn ok ms=… llm_calls=… tool_calls=… history=…`。
+
+429 / 5xx / 超时 / 连不上**重试一次**（隔 1.5 秒），其他 4xx 不重试。这个调用本身
+没有副作用（副作用全在 tool handler 里、由 chat_loop 执行），重试是安全的。
 
 ## Out of scope (later)
 

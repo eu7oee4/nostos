@@ -75,6 +75,24 @@ async def health():
     }
 
 
+@router.get("/stats")
+async def stats(days: int = 7, reply_hours: int = 6):
+    """PLAN §11 的候选指标，先算最便宜的那个：「它先开口」的接受率。
+
+    `acceptance` = 最近 `days` 天开过火的 wake 里，`reply_hours` 小时内等到用户
+    下一句的比例。`closed` 是 skipped / cancelled 按原因分桶——护栏在挡什么、
+    停机漏了几条，看这儿。
+    """
+    days = max(1, min(days, 90))
+    reply_hours = max(1, min(reply_hours, 72))
+    return {
+        "user_id": settings.user_id,
+        "wakes": await db.wake_stats(settings.user_id, days=days, reply_hours=reply_hours),
+        "prefs_count": len(list_style()),
+        "memory_count": len(list_memories(settings.user_id)),
+    }
+
+
 @router.get("/messages")
 async def get_messages(limit: int = 100):
     limit = max(1, min(limit, 500))

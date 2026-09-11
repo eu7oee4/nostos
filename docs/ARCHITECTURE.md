@@ -28,16 +28,26 @@
 
 - 统一 **tool_use** 注册表（`server/app/nostools/`）
 - 内置：记忆读写、闹钟（产品本身，可默认开）
-- 其余能力默认关；出站副作用：人批 + 留痕（stub）
+- 其余能力默认关；出站副作用：人批 + 留痕（stub：`_run_tool` 见到 `outbound`
+  直接拒绝并记 WARNING，批准通道接上之前没有一条能跑）
 - 凭证按 `user_id` 隔离，不进 prompt
 - 不建商店 / 热加载 / browser sidecar
 
 ## 施工纪律
 
 - 第一天就有 `user_id`，无「可变当前用户」全局
+- **同一用户一次只跑一轮**：`run_chat` 和 `fire_wake` 共用一把按 `user_id` 的锁
+  （`app/locks.py`）。锁不可重入——持锁期间不许再进任何会拿这把锁的路径
 - 时间戳服务端盖、不进 system；召回挂当轮尾
-- 动作走 tool_use，不走正文标记
-- cache usage 日志**已有**：`nostos.llm` INFO 打印 provider 返回的整个 usage
+- 动作走 tool_use，不走正文标记；**唯一执行入口**是 `chat_loop._run_tool`，
+  `side_effect` 在那里生效（`outbound` 无批准通道一律拒 + WARNING；`write` 留痕）
+- 有代价的动作**原子落库**：wake 标 fired + 写消息一个事务（`db.fire_wake_tx`）
+- 降级要留痕：wake 的 `skipped` 带 reason、兜底句记 WARNING，不静默
+- 日志带轮 id：`[chat-xxxx]` / `[wake-xxxx]`（`app/trace.py`），一轮 grep 一个 id
+- cache usage 日志**已有**：`nostos.llm` INFO 每次调用打 ms / attempts / 整个 usage
+- 一道门：`ACCESS_TOKEN`（`app/auth.py`）。公网链接前必填；tailnet 内可空
+- 测试：`pytest`（`server/tests/`）。拼装形状、刷子、护栏、开火原子、迁移、门、
+  执行入口都有用例；改这几处先跑红再改绿，撤掉修复必须转红
 - 备份还没做，上线前必须有（含定期真还原演习——「备份存在」不等于「备份能救命」）
 
 详见 [PLAN_companion.md](./PLAN_companion.md)。

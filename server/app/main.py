@@ -6,21 +6,29 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from app.api.routes import router as api_router
+from app.auth import access_gate
 from app.config import settings
 from app.db import init_db
 from app.memory.store import memories_dir
 from app.schedule import start_scheduler, stop_scheduler
+from app.trace import TurnFilter
 
 # uvicorn 的 LOGGING_CONFIG 只给 uvicorn.* 配 handler，root 一个都没有，而 root
 # 默认 WARNING —— 不配这一下，app 侧所有 log.info 全被丢掉，包括 PLAN §15 要求
 # 「第一天就进日志」的 usage cache 字段。实测：改之前 nostos.llm / nostos.wake
 # 一条都不出现。
+#
+# `[%(turn)s]` 是轮 id（app/trace.py）：一次 chat / 一次 wake 里所有日志同一个 id，
+# grep 它就是这一轮从拼装到落库的完整链路。
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(levelname)s:     %(name)s %(message)s",
+    format="%(levelname)s:     %(name)s [%(turn)s] %(message)s",
 )
+for _h in logging.getLogger().handlers:
+    _h.addFilter(TurnFilter())
 
 app = FastAPI(title="nostos", version="0.3.0-minwake")
+app.middleware("http")(access_gate)
 app.include_router(api_router)
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
