@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -9,9 +11,10 @@ from app.config import settings
 from app import db
 from app.llm import LLMError
 from app.memory import list_memories, read_memory
-from app.prefs import delete_style, list_style
+from app.prefs import delete_style, list_style, load_wake, save_wake
 from app.push import public_key_b64u
-from app.schedule.scheduler import schedule_wake
+from app.schedule.policy import random_on
+from app.schedule.scheduler import reload_wake_policy, schedule_wake
 
 router = APIRouter()
 
@@ -39,6 +42,22 @@ class WakeIn(BaseModel):
     intent: str = "check_in"
 
 
+async def _random_wake_status() -> dict[str, Any]:
+    """随机醒来现在是什么状态：开没开、下一次几点、护栏是哪几条。
+
+    `next_at` 是空 = 现在没武装。开着却一直是空，看 `nostos.wake` 日志里
+    `auto wake not armed` / `no_slot` 那行——多半是护栏把窗口掐没了。
+    """
+    pending = await db.list_pending_auto_wakes(settings.user_id)
+    on, reason = random_on()
+    return {
+        "enabled": on,
+        "detail": reason,
+        "next_at": pending[0]["wake_at"] if pending else None,
+        "guardrails": load_wake(),
+    }
+
+
 @router.get("/health")
 async def health():
     return {
@@ -52,6 +71,7 @@ async def health():
         "proactive_enabled": settings.proactive_enabled,
         "push_subscriptions": await db.count_push_subscriptions(settings.user_id),
         "pending_wakes": await db.count_pending_wakes(settings.user_id),
+        "random_wake": await _random_wake_status(),
     }
 
 
@@ -89,6 +109,24 @@ def delete_pref(pref_id: str):
     if not delete_style(pref_id):
         raise HTTPException(404, "not found")
     return {"ok": True, "id": pref_id}
+
+
+@router.get("/prefs/wake")
+def get_wake_prefs():
+    """随机醒来的护栏。**模型没有这个入口**——它不能自己把安静时段放宽。"""
+    return {"user_id": settings.user_id, "wake": load_wake()}
+
+
+@router.put("/prefs/wake")
+async def put_wake_prefs(body: dict[str, Any]):
+    """改护栏。**合并写入**：只带 `{"daily_cap":{"max":1}}` 时其他三条不动。
+
+    存下来之后立刻重算下一次随机醒来——不然改完得等到下一次聊天或重启才生效，
+    而「我把安静时段调宽了他今晚还是不来」这种是查不出来的。
+    """
+    wake = save_wake(body)
+    return {"ok": True, "wake": wake, "auto_wake": await reload_wake_policy()}
+
 
 @router.get("/push/vapid")
 def push_vapid():

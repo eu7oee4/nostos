@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 from app import db
@@ -13,6 +14,9 @@ from app.context.scrub import scrub_reply
 from app.llm import chat_completion
 from app.memory import recall_text
 from app.nostools.registry import registry
+from app.schedule.scheduler import ensure_auto_wake
+
+log = logging.getLogger("nostos.chat")
 
 CHAT_TOOL_NAMES = [
     "memory_list",
@@ -54,6 +58,32 @@ def _parse_args(raw: str | dict[str, Any] | None) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except json.JSONDecodeError:
         return {}
+
+
+async def _finish(
+    uid: str,
+    assistant: dict[str, Any],
+    touched: list[str],
+    wakes_touched: list[int],
+) -> dict[str, Any]:
+    """回复已经落库，收口前把「下一次随机醒来」对一下表。
+
+    用户刚说过话，已武装的那条随机醒来可能正好撞进 `recent_chat` 冷却里——
+    这时重挑一个点。仍合规就原样留着（`ensure_auto_wake` 幂等，不会每条消息
+    都重摇骰子）。
+
+    **绝不能影响这次回复**：随机醒来是补充路径，炸了只记日志——用户等的是那句话。
+    """
+    try:
+        await ensure_auto_wake(uid)
+    except Exception:  # noqa: BLE001
+        log.warning("ensure_auto_wake after chat failed", exc_info=True)
+    return {
+        "user_id": uid,
+        "message": assistant,
+        "memories_touched": [t for t in touched if t],
+        "wakes_touched": wakes_touched,
+    }
 
 
 async def run_chat(user_text: str) -> dict[str, Any]:
@@ -108,19 +138,9 @@ async def run_chat(user_text: str) -> dict[str, Any]:
 
         reply = scrub_reply((msg.get("content") or "").strip())
         assistant = await db.add_message(uid, "assistant", reply)
-        return {
-            "user_id": uid,
-            "message": assistant,
-            "memories_touched": [t for t in touched if t],
-            "wakes_touched": wakes_touched,
-        }
+        return await _finish(uid, assistant, touched, wakes_touched)
 
     msg = await chat_completion(messages, tools=None)
     reply = scrub_reply((msg.get("content") or "").strip()) or "（这轮工具次数用尽了，再说一次试试）"
     assistant = await db.add_message(uid, "assistant", reply)
-    return {
-        "user_id": uid,
-        "message": assistant,
-        "memories_touched": [t for t in touched if t],
-        "wakes_touched": wakes_touched,
-    }
+    return await _finish(uid, assistant, touched, wakes_touched)
