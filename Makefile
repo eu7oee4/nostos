@@ -1,4 +1,7 @@
-.PHONY: up down run health
+.PHONY: up down run health test
+
+test:
+	pytest
 
 up:
 	docker compose up --build

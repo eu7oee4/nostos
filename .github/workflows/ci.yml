@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r server/requirements-dev.txt
+      - name: Run tests
+        run: pytest
+
   smoke:
     name: smoke (/health)
     runs-on: ubuntu-latest

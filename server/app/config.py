@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     port: int = 8787
     user_id: str = "local"
+    # 一道门（app/auth.py）。留空 = 没门，tailnet 内自托管默认这样；
+    # 走 cloudflared / ngrok / 公网 VPS 之前**必须**填。
+    access_token: str = ""
     proactive_enabled: bool = False
     # Web Push 的 VAPID sub claim。**必须是合法 mailto:**——py_vapid 只收 mailto，
     # 而 Apple 会校验域名：`mailto:…@localhost` 直接 403 BadJwtToken（实测）。

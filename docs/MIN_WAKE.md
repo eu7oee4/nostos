@@ -17,12 +17,42 @@ PROACTIVE_ENABLED=true
 SQLite 表 `wakes`（与 `messages` 同库 `data/nostos.sqlite`）：
 
 - `wake_at` / `note`（可选写死台词）/ `intent`（无 note 时到点再生成）
-- `status`: `pending` | `fired` | `cancelled`
-- `source`: `manual`（模型 `wake_set` / `POST /wakes` 定的）| `auto`（随机醒来挑的，
-  见 [RANDOM_WAKE.md](./RANDOM_WAKE.md)）。老库自动补这列，已有行算 `manual`
+- `status` 四态 + `reason`：
+  - `pending` 等着开火
+  - `fired` 开过了，`fired_at` 是真实开火时刻
+  - `cancelled` **人**取消的：`wake_cancel`、`DELETE`、用户把随机关掉（reason 记开关名）
+  - `skipped` **系统**没让它开，reason 必有：护栏挡了（`quiet_hours` / `daily_cap` /
+    `min_interval` / `recent_chat`）、停机期间过点（`missed`）、已武装那条不再合规
+    被重挑（`repick`）、`wake_at` 解析不了（`bad_wake_at`）
 
-到点：往 `messages` 写入一条 `assistant`（站内「伙伴来找你」），**再推一条 Web Push
-到用户手机**（见下面「推出去」）。站内那条是真相来源，推送是附加动作。
+  cancelled 和 skipped 分开是 Raven 那条「失败降级要留痕」：以前两种都记 cancelled，
+  事后分不清是人不要还是系统没给。`GET /stats` 的 `closed` 按 `status:reason` 分桶
+- `source`: `manual`（模型 `wake_set` / `POST /wakes` 定的）| `auto`（随机醒来挑的，
+  见 [RANDOM_WAKE.md](./RANDOM_WAKE.md)）
+
+老库自动迁移：#10 之前的补 `source` 列；#10 之后、这版之前的 status CHECK 只认三态，
+SQLite 改不了 CHECK，启动时**重建表**搬数据（`db._rebuild_wakes`），有测试盯着。
+
+到点：标 `fired` + 往 `messages` 写入一条 `assistant`（站内「伙伴来找你」）是
+**一个事务**（`db.fire_wake_tx`）——以前是两步两个连接，中间挂掉就会在重启时再开一次火，
+用户收到两条一样的。然后**再推一条 Web Push 到用户手机**（见下面「推出去」）。站内那条
+是真相来源，推送是附加动作。
+
+## 并发：一次只跑一轮
+
+同一个用户一把 `asyncio.Lock`（`app/locks.py`），`run_chat` 和 `fire_wake` 都整轮持锁。
+挡的是两种交错：用户连发两条各自读到缺对方那条的历史；聊天正在工具循环里 wake 到点，
+把一条 assistant 插进对话中间。wake 到点时正聊着就等那轮说完再开口。
+
+⚠️ 锁不可重入，所以 `schedule_wake` 对**已到点**的（`delay_seconds=0` / 过去的时刻）
+**不再 inline 开火**，改成挂进调度器下一拍跑，返回 `due_now: true`。模型在聊天里
+`wake_set(delay_seconds=0)` 时聊天这轮正持着锁，inline 会死等自己。
+
+## 重启
+
+`restore_pending_wakes`：没到点的挂回去；过点但在 `MISFIRE_GRACE_SECONDS`（300）内的
+挂到「现在」立刻开；**过点超过宽限的记 `skipped(missed)`，不补开**。以前是过点的全部
+立刻开火——服务器停三天再起来，用户一口气收到停机期间攒的每一条推送，每条还要调一次模型。
 
 ## 怎么测
 
@@ -98,10 +128,23 @@ curl -s -X POST http://localhost:8787/wakes \
 
 单独一份：[RANDOM_WAKE.md](./RANDOM_WAKE.md)。
 
+## 看数：`GET /stats`
+
+PLAN §11 候选指标里最便宜的那个先算出来：「它先开口」的接受率——最近 `days`（默认 7）
+天开过火的 wake，有多少条在 `reply_hours`（默认 6）小时内等到了用户的下一句。按 `source`
+分 manual / auto，另有 `closed` 按 `status:reason` 分桶看护栏在挡什么、停机漏了几条。
+数据本来就在库里（`fired_at` + 下一条 user 的 `created_at`），以前只是没人算。
+
+## 日志
+
+每次 `fire_wake` 开一个轮 id（`[wake-xxxxxxxx]`，`app/trace.py`），这一轮里拼装、调模型、
+落库、推送的日志全带同一个 id；聊天那边是 `[chat-xxxxxxxx]`。模型挂了用兜底句
+「嘿，我来看你啦。」时**记 WARNING**，不静默。
+
 ## 还没做
 
 微信 / 邮件渠道（搁置，见 PLAN §4.1）、护栏的设置页（现在只能 `PUT /prefs/wake`，
-等 #12 一起做）。
+等 #12 一起做）、模型 `wake_set` 的数量硬顶或按 intent 覆盖（现在是纯累加，待定）。
 
 ⚠️ 已知问题：`_generate_wake_line` 生成的那句**开头几乎必带一段括号旁白**（实测 5/5），
 推送之后顶到锁屏上，用户第一眼看到的是舞台说明。见 issue #16。

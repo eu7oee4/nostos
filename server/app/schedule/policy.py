@@ -173,8 +173,9 @@ async def next_auto_wake_at(
         return None
 
     now = _utc_now()
-    # 至少留一分钟：挑到「就是现在」会让 schedule_wake 走立即开火那条分支，
-    # 开完又回头 ensure_auto_wake——护栏全关时这就是一条无限递归。
+    # 至少留一分钟：挑到「就是现在」等于刚聊完立刻又来。（以前还有一条更硬的
+    # 理由——schedule_wake 到点会 inline 开火、开完回头 ensure_auto_wake、护栏全关时
+    # 无限递归；现在到点即开火改成挂进调度器了，递归不存在，但这一分钟仍然要留。）
     earliest = now + _MIN_LEAD
 
     mi = p.get("min_interval") or {}
