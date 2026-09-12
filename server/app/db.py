@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,7 +12,12 @@ import aiosqlite
 
 from app.config import settings
 
+log = logging.getLogger("nostos.db")
+
 DB_NAME = "nostos.sqlite"
+
+# messages 的列清单也只写一份
+MSG_COLS = "id, user_id, role, content, status, reason, created_at"
 
 # wakes 的列清单只写一份：加一列时不用四处找 SELECT
 WAKE_COLS = "id, user_id, wake_at, note, intent, status, source, reason, created_at, fired_at"
@@ -44,16 +50,27 @@ CREATE TABLE IF NOT EXISTS wakes (
 );
 """
 
+# messages 的 status 只对 user 行有意义（一轮的状态挂在触发它的那句上）；
+# assistant / wake 写进来的行直接 done。
+#   pending  用户句落了，回复还没来
+#   done     回复已落库——和 INSERT 回复是**同一个事务**（complete_turn_tx）
+#   failed   模型挂了 / 进程重启。reason 短 slug：llm_502 / llm_401 / error / restart
+# 模型只看 done 的轮次（list_recent_turns）；前端三种都看，failed 的能重发，
+# 重发是把同一行 failed → pending 再跑，不重插。
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'done' CHECK (status IN ('pending', 'done', 'failed')),
+    reason TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_created
     ON messages (user_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_messages_user_status
+    ON messages (user_id, status);
 """ + WAKES_TABLE_SQL + """
 CREATE INDEX IF NOT EXISTS idx_wakes_user_status_at
     ON wakes (user_id, status, wake_at);
@@ -96,7 +113,18 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
        里存的建表 SQL 有没有 `'skipped'`。旧索引跟着旧表一起被 DROP，
        下面的 executescript 再按新表建回来
     3. 新库：表不存在 → 两步都跳过，建表时就是完整的
+    4. 消息状态之前：messages 没有 status / reason → ALTER 补两列，老行全是 done。
+       同样**要在 executescript 之前**：`idx_messages_user_status` 引用了 status
     """
+    cur = await conn.execute("PRAGMA table_info(messages)")
+    msg_cols = {row[1] for row in await cur.fetchall()}
+    if msg_cols and "status" not in msg_cols:
+        await conn.execute(
+            "ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'done' "
+            "CHECK (status IN ('pending', 'done', 'failed'))"
+        )
+        await conn.execute("ALTER TABLE messages ADD COLUMN reason TEXT")
+
     cur = await conn.execute("PRAGMA table_info(wakes)")
     cols = {row[1] for row in await cur.fetchall()}
     if cols and "source" not in cols:
@@ -156,6 +184,9 @@ async def init_db() -> None:
     async with aiosqlite.connect(db_path()) as conn:
         await conn.execute("PRAGMA journal_mode=WAL")
         await _ensure_schema(conn)
+    swept = await sweep_pending_turns()
+    if swept:
+        log.warning("swept %s pending turns as failed:restart", swept)
 
 
 @asynccontextmanager
@@ -192,8 +223,7 @@ async def add_message(user_id: str, role: str, content: str) -> dict[str, Any]:
         msg_id = cur.lastrowid
         await conn.commit()
         cur = await conn.execute(
-            "SELECT id, user_id, role, content, created_at FROM messages WHERE id = ?",
-            (msg_id,),
+            f"SELECT {MSG_COLS} FROM messages WHERE id = ?", (msg_id,)
         )
         row = await cur.fetchone()
         return dict(row)
@@ -208,7 +238,7 @@ async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
     """
     async with _connect() as conn:
         cur = await conn.execute(
-            "SELECT id, user_id, role, content, created_at FROM messages "
+            f"SELECT {MSG_COLS} FROM messages "
             "WHERE user_id = ? ORDER BY id DESC LIMIT ?",
             (user_id, limit),
         )
@@ -217,24 +247,135 @@ async def list_messages(user_id: str, limit: int = 100) -> list[dict[str, Any]]:
 
 
 async def list_recent_turns(user_id: str, limit: int = 40) -> list[dict[str, Any]]:
-    """Recent user/assistant rows with created_at for prompt assembly."""
-    msgs = await list_messages(user_id, limit=limit)
-    return [
-        {
-            "id": m["id"],
-            "role": m["role"],
-            "content": m["content"],
-            "created_at": m["created_at"],
-        }
-        for m in msgs
-        if m["role"] in ("user", "assistant")
-    ]
+    """给拼装用的最近轮次：**只有 done 的**。
+
+    pending（正在跑的这句，由 Trigger 单独带）和 failed（没等到回复的句子）都
+    不进历史——模型看见连续两条 user 句只会学着自言自语。过滤在 SQL 里做，
+    limit 数的是能进 prompt 的行。
+    """
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            "WHERE user_id = ? AND status = 'done' AND role IN ('user', 'assistant') "
+            "ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in reversed(rows)]
 
 
 async def history_for_llm(user_id: str, limit: int = 40) -> list[dict[str, str]]:
     """Recent turns for the model (role/content only; prefer list_recent_turns)."""
     turns = await list_recent_turns(user_id, limit=limit)
     return [{"role": t["role"], "content": t["content"]} for t in turns]
+
+
+# --- 一轮聊天的状态机（挂在 user 行上）-------------------------------------
+
+
+async def _get_message(conn: aiosqlite.Connection, msg_id: int) -> dict[str, Any] | None:
+    cur = await conn.execute(f"SELECT {MSG_COLS} FROM messages WHERE id = ?", (msg_id,))
+    row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def begin_user_turn(user_id: str, content: str) -> dict[str, Any]:
+    """用户句先落库、标 pending，再去调模型。"""
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "INSERT INTO messages (user_id, role, content, status) "
+            "VALUES (?, 'user', ?, 'pending')",
+            (user_id, content),
+        )
+        msg_id = cur.lastrowid
+        await conn.commit()
+        row = await _get_message(conn, msg_id)
+        assert row is not None
+        return row
+
+
+async def complete_turn_tx(user_msg_id: int, user_id: str, reply: str) -> dict[str, Any] | None:
+    """回复落库：user 标 done + INSERT assistant，**一个事务**（同 fire_wake_tx）。
+
+    `WHERE status = 'pending'` 兼做幂等：rowcount 为 0 = 这轮已经收过口或已被判
+    failed，整个事务回滚、返回 None，一个字都不写。
+    """
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "UPDATE messages SET status = 'done', reason = NULL "
+            "WHERE id = ? AND user_id = ? AND status = 'pending'",
+            (user_msg_id, user_id),
+        )
+        if cur.rowcount == 0:
+            await conn.rollback()
+            return None
+        cur = await conn.execute(
+            "INSERT INTO messages (user_id, role, content, status) "
+            "VALUES (?, 'assistant', ?, 'done')",
+            (user_id, reply),
+        )
+        msg_id = cur.lastrowid
+        await conn.commit()
+        return await _get_message(conn, msg_id)
+
+
+async def fail_turn(user_msg_id: int, reason: str) -> bool:
+    """模型挂了：pending → failed + reason。reason 必填，这就是留痕本身。"""
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "UPDATE messages SET status = 'failed', reason = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (reason, user_msg_id),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def reopen_turn(user_msg_id: int, user_id: str) -> dict[str, Any]:
+    """重发：failed → pending，**复用同一行**，不重插。
+
+    只允许重发该用户**最后一条 user 句**：后面已经有新的一句时，这条的回复会
+    排到新那轮之后，读起来串行。回 `{"ok": False, "detail": slug}`，slug 有三个：
+    not_found / not_failed / not_latest，路由据此挑状态码。
+    """
+    async with _connect() as conn:
+        row = await _get_message(conn, user_msg_id)
+        if not row or row["user_id"] != user_id or row["role"] != "user":
+            return {"ok": False, "detail": "not_found"}
+        if row["status"] != "failed":
+            return {"ok": False, "detail": "not_failed"}
+        cur = await conn.execute(
+            "SELECT id FROM messages WHERE user_id = ? AND role = 'user' "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        latest = await cur.fetchone()
+        if latest and int(latest["id"]) != int(user_msg_id):
+            return {"ok": False, "detail": "not_latest"}
+        cur = await conn.execute(
+            "UPDATE messages SET status = 'pending', reason = NULL "
+            "WHERE id = ? AND status = 'failed'",
+            (user_msg_id,),
+        )
+        if cur.rowcount == 0:
+            await conn.rollback()
+            return {"ok": False, "detail": "not_failed"}
+        await conn.commit()
+        return {"ok": True, "message": await _get_message(conn, user_msg_id)}
+
+
+async def sweep_pending_turns() -> int:
+    """启动时跑：进程在「user 已落、回复未落」之间挂掉的轮，标 failed:restart。
+
+    和 wake 重启 missed 不补发是同一条纪律——不替用户重发，给他一个重发按钮。
+    """
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "UPDATE messages SET status = 'failed', reason = 'restart' "
+            "WHERE status = 'pending'"
+        )
+        await conn.commit()
+        return int(cur.rowcount or 0)
 
 
 async def create_wake(
@@ -328,8 +469,7 @@ async def fire_wake_tx(wake_id: int, user_id: str, text: str) -> dict[str, Any] 
         msg_id = cur.lastrowid
         await conn.commit()
         cur = await conn.execute(
-            "SELECT id, user_id, role, content, created_at FROM messages WHERE id = ?",
-            (msg_id,),
+            f"SELECT {MSG_COLS} FROM messages WHERE id = ?", (msg_id,)
         )
         row = await cur.fetchone()
         return dict(row) if row else None

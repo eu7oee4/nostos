@@ -42,6 +42,11 @@
 - 动作走 tool_use，不走正文标记；**唯一执行入口**是 `chat_loop._run_tool`，
   `side_effect` 在那里生效（`outbound` 无批准通道一律拒 + WARNING；`write` 留痕）
 - 有代价的动作**原子落库**：wake 标 fired + 写消息一个事务（`db.fire_wake_tx`）
+- 聊天同理，一轮的状态挂在 user 行上（`messages.status`）：用户句先落库标 `pending`；
+  回复 INSERT + user 标 `done` 一个事务（`db.complete_turn_tx`）；模型挂了标 `failed`
+  + reason（`llm_502` / `error`）再抛；重启把半路的 pending 扫成 `failed:restart`，
+  不替用户重发。重发（`POST /chat/{id}/retry`）**复用那一行**不重插，只许重发最后
+  一条。拼装只吃 `done` 的轮次——模型永远看不见没等到回复的句子
 - 降级要留痕：wake 的 `skipped` 带 reason、兜底句记 WARNING，不静默
 - 日志带轮 id：`[chat-xxxx]` / `[wake-xxxx]`（`app/trace.py`），一轮 grep 一个 id
 - cache usage 日志**已有**：`nostos.llm` INFO 每次调用打 ms / attempts / 整个 usage
