@@ -128,6 +128,30 @@
       color: var(--bot-fg);
       border-bottom-left-radius: 0.35rem;
     }
+    /* 一句话的状态挂在 user 气泡上：pending 半透明，failed 描边 + 一行「重发」 */
+    .msg.user.pending .bubble { opacity: 0.55; }
+    .msg.user.failed .bubble { outline: 1.5px solid var(--danger); outline-offset: 1px; }
+    .msg .state {
+      font-size: 0.72rem;
+      color: var(--danger);
+      margin: 0.25rem 0.35rem 0;
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .msg .state .retry {
+      appearance: none;
+      border: 1px solid var(--danger);
+      background: transparent;
+      color: var(--danger);
+      border-radius: 999px;
+      padding: 0.1rem 0.6rem;
+      font: inherit;
+      font-size: 0.72rem;
+      cursor: pointer;
+    }
+    .msg .state .retry:disabled { opacity: 0.5; cursor: default; }
 
     .composer {
       flex: 0 0 auto;
@@ -314,19 +338,49 @@
     const box = document.getElementById('box');
     const go = document.getElementById('go');
     const err = document.getElementById('err');
-    let knownCount = 0;
 
     function autosize() {
       box.style.height = 'auto';
       box.style.height = Math.min(box.scrollHeight, 120) + 'px';
     }
 
-    function addBubble(role, content) {
+    // 一条 user 句有三种状态（服务端 messages.status）：pending / done / failed。
+    // failed 的能重发——重发是同一行 failed → pending 再跑，不重插，所以气泡也复用。
+    function setState(wrap, status, opts) {
+      wrap.classList.remove('pending', 'failed');
+      if (status === 'pending' || status === 'failed') wrap.classList.add(status);
+      let state = wrap.querySelector('.state');
+      if (status !== 'failed') {
+        if (state) state.remove();
+        return;
+      }
+      if (!state) {
+        state = document.createElement('div');
+        state.className = 'state';
+        wrap.appendChild(state);
+      }
+      state.innerHTML = '';
+      const label = document.createElement('span');
+      label.textContent = (opts && opts.detail) || '没发出去';
+      state.appendChild(label);
+      if (!(opts && opts.noRetry)) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'retry';
+        btn.textContent = '重发';
+        btn.addEventListener('click', () => retry(wrap));
+        state.appendChild(btn);
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function addBubble(role, content, opts) {
       const empty = log.querySelector('.empty');
       if (empty) empty.remove();
 
       const wrap = document.createElement('div');
       wrap.className = 'msg ' + (role === 'user' ? 'user' : 'assistant');
+      if (opts && opts.id != null) wrap.dataset.id = String(opts.id);
 
       const who = document.createElement('div');
       who.className = 'who';
@@ -339,7 +393,9 @@
       wrap.appendChild(who);
       wrap.appendChild(bubble);
       log.appendChild(wrap);
+      if (role === 'user' && opts && opts.status) setState(wrap, opts.status);
       log.scrollTop = log.scrollHeight;
+      return wrap;
     }
 
     function showEmpty() {
@@ -350,19 +406,61 @@
       log.appendChild(el);
     }
 
+    // 「有没有变」不能只看条数：本轮 pending → failed / done 条数不变。
+    let knownSig = '';
+    function signature(msgs) {
+      if (!msgs.length) return '0';
+      const last = msgs[msgs.length - 1];
+      return msgs.length + ':' + last.id + ':' + (last.status || '');
+    }
+
     async function load(opts) {
       const silent = opts && opts.silent;
       const r = await fetch('/messages');
       const data = await r.json();
       const msgs = data.messages || [];
-      if (silent && msgs.length === knownCount) return;
-      knownCount = msgs.length;
+      const sig = signature(msgs);
+      // 发送中别重画；还没拿到 id 的失败句（请求根本没到服务端）也别被服务端真相冲掉
+      if (silent && (sig === knownSig || go.disabled || log.querySelector('.msg.failed:not([data-id])'))) return;
+      knownSig = sig;
       if (!msgs.length) {
         showEmpty();
         return;
       }
       log.innerHTML = '';
-      msgs.forEach(m => addBubble(m.role, m.content));
+      msgs.forEach(m => addBubble(m.role, m.content, { id: m.id, status: m.status }));
+    }
+
+    // send 和 retry 共用：wrap 已经是 pending 气泡，这里等回复、按结果改状态。
+    async function deliver(wrap, url, body) {
+      go.disabled = true;
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: body == null ? undefined : JSON.stringify(body),
+        });
+        const raw = await r.text();
+        let data;
+        try { data = JSON.parse(raw); }
+        catch (_) { data = { detail: raw.slice(0, 200) || r.statusText }; }
+        if (!r.ok) {
+          if (data.message_id != null) wrap.dataset.id = String(data.message_id);
+          // 409 = 这条已经不能重发了（后面有新消息 / 状态变了），照实说，不给按钮
+          setState(wrap, 'failed', { detail: data.detail || r.statusText, noRetry: r.status === 409 });
+          if (wrap.dataset.id) knownSig = log.querySelectorAll('.msg').length + ':' + wrap.dataset.id + ':failed';
+          return;
+        }
+        setState(wrap, 'done');
+        addBubble('assistant', data.message.content, { id: data.message.id });
+        // 和服务端对齐，免得下一次轮询把整页重画一遍
+        knownSig = log.querySelectorAll('.msg').length + ':' + data.message.id + ':done';
+      } catch (ex) {
+        setState(wrap, 'failed', { detail: String(ex.message || ex) });
+      } finally {
+        go.disabled = false;
+        box.focus();
+      }
     }
 
     async function send() {
@@ -372,28 +470,38 @@
 
       box.value = '';
       autosize();
-      addBubble('user', content);
-      go.disabled = true;
+      const wrap = addBubble('user', content, { status: 'pending' });
+      await deliver(wrap, '/chat', { content });
+    }
 
+    // 没拿到 id 的失败句（断网、请求根本没出去）也能重发。但「没收到响应」不等于
+    // 「服务端没收到」——超时那种请求其实到了、句子已经落库。所以先问一遍 /messages：
+    // 最后一条 user 句正好是这段字、又没等到回复，就走它的 retry；否则才重新 POST。
+    async function findOrphan(content) {
       try {
-        const r = await fetch('/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content }),
-        });
-        const raw = await r.text();
-        let data;
-        try { data = JSON.parse(raw); }
-        catch (_) { throw new Error(raw.slice(0, 200) || r.statusText); }
-        if (!r.ok) throw new Error(data.detail || r.statusText);
-        addBubble('assistant', data.message.content);
-        knownCount += 2;
-      } catch (ex) {
-        err.textContent = String(ex.message || ex);
-      } finally {
-        go.disabled = false;
-        box.focus();
+        const data = await (await fetch('/messages')).json();
+        const msgs = data.messages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i];
+          if (m.role !== 'user') continue;
+          if (m.content === content && (m.status === 'failed' || m.status === 'pending')) return m.id;
+          return null;
+        }
+      } catch (_) { /* 还是断着，下面重新 POST 也会失败，状态照旧 */ }
+      return null;
+    }
+
+    async function retry(wrap) {
+      if (go.disabled) return;
+      setState(wrap, 'pending');
+      let id = wrap.dataset.id;
+      const content = wrap.querySelector('.bubble').textContent;
+      if (!id) {
+        id = await findOrphan(content);
+        if (id) wrap.dataset.id = String(id);
       }
+      if (id) await deliver(wrap, '/chat/' + encodeURIComponent(id) + '/retry', null);
+      else await deliver(wrap, '/chat', { content });
     }
 
     document.getElementById('f').addEventListener('submit', (e) => {

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.chat_loop import run_chat
+from app.chat_loop import RetryRefused, TurnFailed, retry_chat, run_chat
 from app.config import settings
 from app import db
 from app.llm import LLMError
@@ -193,6 +193,33 @@ async def post_wake(body: WakeIn):
     return result
 
 
+def _failure_response(e: TurnFailed) -> JSONResponse:
+    """这轮没等到回复。状态码看原因：LLM 4xx 透传（401 → 503：是我们的 key 坏了，
+    不是用户的错）、其余 5xx / 传输错 502、非 LLM 的异常 500。JSON 里带
+    `message_id`——那条 user 句已经落库标 failed，前端拿 id 画「重发」。"""
+    cause = e.cause
+    if isinstance(cause, LLMError):
+        code = 502
+        if cause.status == 401:
+            code = 503
+        elif 400 <= cause.status < 500:
+            code = cause.status
+        detail = str(cause)
+    else:
+        code = 500
+        detail = f"turn failed: {cause}" if cause else str(e)
+    return JSONResponse(
+        {
+            "detail": detail,
+            "status": code,
+            "message_id": e.user_message_id,
+            "message_status": "failed",
+            "reason": e.reason,
+        },
+        status_code=code,
+    )
+
+
 @router.post("/chat")
 async def chat(body: ChatIn):
     text = body.content.strip()
@@ -201,10 +228,24 @@ async def chat(body: ChatIn):
 
     try:
         return await run_chat(text)
-    except LLMError as e:
-        code = 502
-        if e.status == 401:
-            code = 503
-        elif 400 <= e.status < 500:
-            code = e.status
-        return JSONResponse({"detail": str(e), "status": e.status}, status_code=code)
+    except TurnFailed as e:
+        return _failure_response(e)
+
+
+_RETRY_REFUSALS = {
+    "not_found": (404, "没有这条消息"),
+    "not_failed": (409, "这条不是没发出去的"),
+    "not_latest": (409, "后面已经有新消息了，直接重新说一句吧"),
+}
+
+
+@router.post("/chat/{message_id}/retry")
+async def chat_retry(message_id: int):
+    """重发一句 failed 的 user 句：**复用那一行**，不重插。只能重发最后一条。"""
+    try:
+        return await retry_chat(message_id)
+    except RetryRefused as e:
+        code, text = _RETRY_REFUSALS.get(e.detail, (409, e.detail))
+        raise HTTPException(code, text)
+    except TurnFailed as e:
+        return _failure_response(e)

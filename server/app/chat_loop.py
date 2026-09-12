@@ -12,7 +12,7 @@ from app import db
 from app.config import settings
 from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
-from app.llm import chat_completion
+from app.llm import LLMError, chat_completion
 from app.locks import turn_lock
 from app.memory import recall_text
 from app.nostools.registry import registry
@@ -33,6 +33,25 @@ CHAT_TOOL_NAMES = [
 ]
 MAX_TOOL_ROUNDS = 4
 _ARGS_LOG_CHARS = 200
+
+
+class TurnFailed(Exception):
+    """这轮没等到回复。user 行已经标成 failed + reason，这里把 id 带给路由，
+    前端拿着它画「重发」。`cause` 是原异常（多半是 LLMError），路由据此挑状态码。"""
+
+    def __init__(self, user_message_id: int, reason: str, cause: BaseException | None):
+        self.user_message_id = user_message_id
+        self.reason = reason
+        self.cause = cause
+        super().__init__(f"turn failed ({reason}) user_message_id={user_message_id}")
+
+
+class RetryRefused(Exception):
+    """重发被拒：not_found / not_failed / not_latest（见 db.reopen_turn）。"""
+
+    def __init__(self, detail: str):
+        self.detail = detail
+        super().__init__(detail)
 
 
 def _brief(arguments: dict[str, Any]) -> str:
@@ -130,22 +149,41 @@ async def _finish(
 
 
 async def run_chat(user_text: str) -> dict[str, Any]:
-    """一轮聊天。整轮持 turn 锁（app/locks.py）：同一用户串行，wake 等这轮说完。"""
+    """一轮聊天。整轮持 turn 锁（app/locks.py）：同一用户串行，wake 等这轮说完。
+
+    用户句在锁内落库（pending）——连发两条时第二条要等第一条整轮结束再插，
+    库里的顺序才和回复的顺序一致。
+    """
     uid = settings.user_id
     new_turn("chat")
     async with turn_lock(uid):
-        return await _run_chat_locked(uid, user_text)
+        row = await db.begin_user_turn(uid, user_text)
+        return await _run_turn(uid, row)
 
 
-async def _run_chat_locked(uid: str, user_text: str) -> dict[str, Any]:
+async def retry_chat(user_message_id: int) -> dict[str, Any]:
+    """重发一句 failed 的：同一行 failed → pending，再跑同一条轮次逻辑。不重插。"""
+    uid = settings.user_id
+    new_turn("chat")
+    async with turn_lock(uid):
+        got = await db.reopen_turn(user_message_id, uid)
+        if not got.get("ok"):
+            raise RetryRefused(str(got.get("detail") or "refused"))
+        log.info("retrying user_message_id=%s", user_message_id)
+        return await _run_turn(uid, got["message"])
+
+
+async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
+    """user 行已是 pending。跑完：要么 complete_turn_tx（done + 回复一个事务），
+    要么标 failed + reason 再抛 TurnFailed。不存在「落了 user 没人管」的第三种结局。"""
     started = time.monotonic()
     llm_calls = 0
     tool_calls_total = 0
+    user_msg_id = int(user_row["id"])
+    user_text = str(user_row["content"])
 
-    await db.add_message(uid, "user", user_text)
-    turns = await db.list_recent_turns(uid, limit=40)
-    # Prior turns only — current user line is carried by Trigger (no duplicate).
-    prior = turns[:-1] if turns else []
+    # 只有 done 的轮次进历史；当前句是 pending，由 Trigger 单独带（不重复）。
+    prior = await db.list_recent_turns(uid, limit=40)
 
     messages = build_messages(
         user_id=uid,
@@ -168,50 +206,69 @@ async def _run_chat_locked(uid: str, user_text: str) -> dict[str, Any]:
             len(prior),
         )
 
-    for _ in range(MAX_TOOL_ROUNDS):
-        llm_calls += 1
-        msg = await chat_completion(messages, tools=tools, tool_choice="auto")
-        tool_calls = msg.get("tool_calls") or []
-
-        if tool_calls:
-            tool_calls_total += len(tool_calls)
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": msg.get("content") or None,
-                    "tool_calls": tool_calls,
-                }
-            )
-            for call in tool_calls:
-                fn = call.get("function") or {}
-                name = fn.get("name") or ""
-                args = _parse_args(fn.get("arguments"))
-                result = await _run_tool(name, args)
-                if name == "memory_write" and result.get("ok"):
-                    touched.append(str(result.get("id") or args.get("name") or ""))
-                if name == "wake_set" and result.get("ok"):
-                    w = result.get("wake") or {}
-                    if w.get("id") is not None:
-                        wakes_touched.append(int(w["id"]))
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.get("id") or name,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
-                )
-            continue
-
-        reply = scrub_reply((msg.get("content") or "").strip())
-        assistant = await db.add_message(uid, "assistant", reply)
-        _summary("ok")
+    async def _commit(reply: str, outcome: str) -> dict[str, Any]:
+        assistant = await db.complete_turn_tx(user_msg_id, uid, reply)
+        if assistant is None:
+            # 锁保证不会发生：pending 只有这一轮在改。真到这儿就是有人绕过了锁。
+            log.warning("user_message_id=%s not pending at commit; reply dropped", user_msg_id)
+            _summary("not_pending")
+            raise TurnFailed(user_msg_id, "not_pending", None)
+        _summary(outcome)
         return await _finish(uid, assistant, touched, wakes_touched)
 
-    # 工具轮次用尽：最后一次不给工具，逼他收口。这是有意的降级，要留痕。
-    log.warning("tool rounds exhausted (%s); forcing a final reply without tools", MAX_TOOL_ROUNDS)
-    llm_calls += 1
-    msg = await chat_completion(messages, tools=None)
-    reply = scrub_reply((msg.get("content") or "").strip()) or "（这轮工具次数用尽了，再说一次试试）"
-    assistant = await db.add_message(uid, "assistant", reply)
-    _summary("exhausted")
-    return await _finish(uid, assistant, touched, wakes_touched)
+    try:
+        for _ in range(MAX_TOOL_ROUNDS):
+            llm_calls += 1
+            msg = await chat_completion(messages, tools=tools, tool_choice="auto")
+            tool_calls = msg.get("tool_calls") or []
+
+            if tool_calls:
+                tool_calls_total += len(tool_calls)
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": msg.get("content") or None,
+                        "tool_calls": tool_calls,
+                    }
+                )
+                for call in tool_calls:
+                    fn = call.get("function") or {}
+                    name = fn.get("name") or ""
+                    args = _parse_args(fn.get("arguments"))
+                    result = await _run_tool(name, args)
+                    if name == "memory_write" and result.get("ok"):
+                        touched.append(str(result.get("id") or args.get("name") or ""))
+                    if name == "wake_set" and result.get("ok"):
+                        w = result.get("wake") or {}
+                        if w.get("id") is not None:
+                            wakes_touched.append(int(w["id"]))
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.get("id") or name,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+                continue
+
+            reply = scrub_reply((msg.get("content") or "").strip())
+            return await _commit(reply, "ok")
+
+        # 工具轮次用尽：最后一次不给工具，逼他收口。这是有意的降级，要留痕。
+        log.warning("tool rounds exhausted (%s); forcing a final reply without tools", MAX_TOOL_ROUNDS)
+        llm_calls += 1
+        msg = await chat_completion(messages, tools=None)
+        reply = scrub_reply((msg.get("content") or "").strip()) or "（这轮工具次数用尽了，再说一次试试）"
+        return await _commit(reply, "exhausted")
+
+    except TurnFailed:
+        raise
+    except Exception as e:  # noqa: BLE001 — 任何没等到回复的结局都要在 user 行上留痕
+        reason = f"llm_{e.status}" if isinstance(e, LLMError) else "error"
+        try:
+            await db.fail_turn(user_msg_id, reason)
+        except Exception:  # noqa: BLE001
+            log.warning("fail_turn(%s) itself failed", user_msg_id, exc_info=True)
+        log.warning("turn failed user_message_id=%s reason=%s: %s", user_msg_id, reason, e)
+        _summary("failed")
+        raise TurnFailed(user_msg_id, reason, e) from e

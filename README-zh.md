@@ -229,8 +229,10 @@ ngrok http 8787
 - `GET /health` — 含 `has_key` / `memory_count` / `pending_wakes` / `random_wake`
 - `GET /stats` — 「它先开口」的接受率（最近 7 天开火的 wake 有多少条 6 小时内等到回话）、
   被护栏挡掉 / 停机漏掉的按原因分桶
-- `GET /messages` — 当前 `USER_ID`（默认 `local`）的历史
-- `POST /chat` `{"content":"..."}` — 写入用户句 → 调模型 → 写入回复
+- `GET /messages` — 当前 `USER_ID`（默认 `local`）的历史，每行带 `status`（`pending` / `done` / `failed`）和 `reason`
+- `POST /chat` `{"content":"..."}` — 写入用户句（`pending`）→ 调模型 → 写入回复并标 `done`（一个事务）。
+  模型挂了回 5xx，JSON 带 `message_id`，那句已落库标 `failed` + `reason`
+- `POST /chat/{id}/retry` — 重发一句 `failed` 的：复用同一行，不重插；只能重发最后一条，否则 409
 - SQLite：`data/nostos.sqlite`（WAL），时间戳由服务端盖；同一用户一次只跑一轮
 - 日志每行带轮 id `[chat-…]` / `[wake-…]`，一轮的拼装、调模型、工具、落库 grep 一个 id 全在
 
