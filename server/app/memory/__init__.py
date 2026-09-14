@@ -1,6 +1,9 @@
 """Markdown memories under DATA_DIR/memories/<user_id>/."""
 
 from app.memory.store import (
+    INTENSITIES,
+    KINDS,
+    delete_memory,
     list_memories,
     memories_dir,
     read_memory,
@@ -10,6 +13,9 @@ from app.memory.store import (
 )
 
 __all__ = [
+    "INTENSITIES",
+    "KINDS",
+    "delete_memory",
     "list_memories",
     "memories_dir",
     "read_memory",

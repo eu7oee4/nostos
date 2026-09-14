@@ -10,7 +10,7 @@ from app.chat_loop import RetryRefused, TurnFailed, retry_chat, run_chat
 from app.config import settings
 from app import db
 from app.llm import LLMError
-from app.memory import list_memories, read_memory
+from app.memory import delete_memory, list_memories, read_memory, safe_id
 from app.prefs import delete_style, list_style, load_wake, save_wake
 from app.push import public_key_b64u
 from app.schedule.policy import random_on
@@ -111,6 +111,15 @@ def get_memory(name: str):
     if not got.get("ok"):
         raise HTTPException(404, got.get("detail") or "not found")
     return got
+
+
+@router.delete("/memories/{name}")
+def delete_memory_route(name: str):
+    """记忆的隐私出口（PLAN §4.2「用户可看可删」）。模型没有 delete 工具，
+    和 prefs 是同一条纪律——能抹掉一条记忆的只有用户。"""
+    if not delete_memory(name, settings.user_id):
+        raise HTTPException(404, "not found")
+    return {"ok": True, "id": safe_id(name)}
 
 
 @router.get("/prefs")

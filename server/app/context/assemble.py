@@ -36,6 +36,8 @@ from app.profile import profile_block
 
 _WEEKDAYS_ZH = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 _EMPTY_RECALL = "（暂无长期记忆）"
+RECALL_HEADER = "现在浮现在你脑海里的记忆有："
+RECALL_BOUNDARY = "（每条都标了记下的日期，新的在前。那是当时的事，不一定是现在的情况。）"
 
 
 def _daypart(hour: int) -> str:
@@ -217,12 +219,17 @@ def build_messages(
         if rendered:
             messages.append(rendered)
 
+    # 召回块：每条带「记于 MM-DD」（store.recall_text），开头一句边界说明——
+    # 没日期的话，10 月看到「妈妈 9 月中旬来杭州」会当成现在的事，问「你妈到了吗」。
+    # 这块在断点③之后、每轮本来就变，多一行不花缓存。
     recall_clean = (recall or "").strip()
     if recall_clean and recall_clean != _EMPTY_RECALL:
         messages.append(
             {
                 "role": "system",
-                "content": f"现在浮现在你脑海里的记忆有：\n{recall_clean}",
+                "content": (
+                    f"{RECALL_HEADER}\n{RECALL_BOUNDARY}\n\n{recall_clean}"
+                ),
             }
         )
 

@@ -21,16 +21,25 @@ from app.trace import new_turn
 
 log = logging.getLogger("nostos.chat")
 
+# 给模型看的那套。记忆写入是 item / feel 两个工具（Notion「记忆系统设计对照」⑫）。
 CHAT_TOOL_NAMES = [
     "memory_list",
     "memory_read",
-    "memory_write",
+    "memory_write_item",
+    "memory_write_feel",
     "prefs_write",
     "prefs_list",
     "wake_set",
     "wake_list",
     "wake_cancel",
 ]
+# 老名字：一个版本周期内还能执行（当 item），但不给模型看——三个写工具摆一起他挑最短的。
+_LEGACY_TOOL_NAMES = ["memory_write"]
+MEMORY_WRITE_TOOLS = {
+    "memory_write_item": "item",
+    "memory_write_feel": "feel",
+    "memory_write": "item",
+}
 MAX_TOOL_ROUNDS = 4
 _ARGS_LOG_CHARS = 200
 
@@ -75,7 +84,7 @@ async def _run_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     spec = registry.tools.get(name)
     if not spec or not spec.handler:
         return {"ok": False, "detail": f"unknown tool: {name}"}
-    if name not in CHAT_TOOL_NAMES:
+    if name not in CHAT_TOOL_NAMES and name not in _LEGACY_TOOL_NAMES:
         return {"ok": False, "detail": f"tool not available: {name}"}
 
     if spec.side_effect == "outbound":
@@ -195,14 +204,19 @@ async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
     tools = registry.openai_tools(CHAT_TOOL_NAMES)
     touched: list[str] = []
     wakes_touched: list[int] = []
+    # 分工具计写入数（Notion ⑦）：feel 长期为零而对话里明明有情绪，就是 ⑫ 说的兜底该上了。
+    # 现在还没有会话段，先按轮记；段落地后攒成按段的。
+    mem_written = {"item": 0, "feel": 0}
 
     def _summary(outcome: str) -> None:
         log.info(
-            "turn %s ms=%s llm_calls=%s tool_calls=%s history=%s",
+            "turn %s ms=%s llm_calls=%s tool_calls=%s mem_item=%s mem_feel=%s history=%s",
             outcome,
             int((time.monotonic() - started) * 1000),
             llm_calls,
             tool_calls_total,
+            mem_written["item"],
+            mem_written["feel"],
             len(prior),
         )
 
@@ -236,8 +250,9 @@ async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
                     name = fn.get("name") or ""
                     args = _parse_args(fn.get("arguments"))
                     result = await _run_tool(name, args)
-                    if name == "memory_write" and result.get("ok"):
+                    if name in MEMORY_WRITE_TOOLS and result.get("ok"):
                         touched.append(str(result.get("id") or args.get("name") or ""))
+                        mem_written[MEMORY_WRITE_TOOLS[name]] += 1
                     if name == "wake_set" and result.get("ok"):
                         w = result.get("wake") or {}
                         if w.get("id") is not None:

@@ -13,7 +13,10 @@ user        【09-08 周二 11:24 中午】
             我是谁
 assistant   你是眠眠，住在杭州，喜欢深夜敲代码。
             …（段内历史，纯追加）
-system      现在浮现在你脑海里的记忆有：…（有记忆才注入）
+system      现在浮现在你脑海里的记忆有：
+            （每条都标了记下的日期，新的在前。那是当时的事，不一定是现在的情况。）
+            ### 妈妈来杭州 (`mom-visit`) | 记于 09-03
+            …（有记忆才注入；新的在前、每条带日期，见 MIN_MEMORY.md）
 user        【09-08 周二 11:38 中午】
             【距离上一条消息，过了 13 分钟】
             地址不知道怎么写呀
@@ -52,6 +55,14 @@ DESIGN §2.5 留的「MVP 可先并进 persona 直写」按这条改判。
 `GET /prefs`、`DELETE /prefs/{id}` 和网页右上角那个抽屉。
 
 ⚠️ **写不写得下来靠模型自觉，`deepseek-chat` 实测只有 3~6 成**（45 次采样，脚本 `eval/probe_prefs_write.py`，数据在 `eval/README.md`）。更坏的形状是他答一句「好，记住了」然后什么都没写。2026-09-09 决定 **#9 按现状收**，把它当 PLAN §10.2 的选型指标，不当 bug 修——同一套接线里 `memory_write` 一次就开火，问题在底座认不认得出「这句是在挑我说话方式」。
+
+## 召回这一块（2026-09-14 改的）
+
+召回块每条带「记于 MM-DD」、新的在前，块开头多一句边界说明（`assemble.RECALL_BOUNDARY`）。
+它在断点③之后、本来每轮就变，多一行不花缓存。细节和理由在 [MIN_MEMORY.md](./MIN_MEMORY.md)。
+
+`system.md` 同时改了记忆那段（item / feel 两个工具 + 「按日期判断新旧」一句）。
+⚠️ 那是稳定前缀，上线第一次全 miss 一次，之后回稳态。
 
 ## 为什么要长得一样（2026-09-08 改的就是这个）
 
@@ -161,7 +172,8 @@ miss 稳定在一轮的量级 = 断点位置符合预期；miss ≈ 整个窗口
 
 每行前面的 `[chat-xxxxxxxx]` / `[wake-xxxxxxxx]` 是轮 id（`app/trace.py`）：一轮
 聊天里工具循环调了几次模型、每次多少 token，grep 这个 id 全在一起。轮末
-`nostos.chat` 再打一行汇总：`turn ok ms=… llm_calls=… tool_calls=… history=…`。
+`nostos.chat` 再打一行汇总：`turn ok ms=… llm_calls=… tool_calls=… mem_item=… mem_feel=… history=…`
+（后两个是这轮 item / feel 各写了几条，Notion ⑦ 那个观测的按轮版）。
 
 429 / 5xx / 超时 / 连不上**重试一次**（隔 1.5 秒），其他 4xx 不重试。这个调用本身
 没有副作用（副作用全在 tool handler 里、由 chat_loop 执行），重试是安全的。
