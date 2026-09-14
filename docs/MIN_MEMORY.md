@@ -24,7 +24,9 @@ data/memories/<USER_ID>/
 ```
 
 - `kind`：`item`（事件 / 短事实）或 `feel`（感受）。index 里没这个字段的老文件一律按 `item`
-- `intensity`：只有 feel 有，`low` / `mid` / `high` 三档。valence + arousal 两维等召回端分层想清楚再说
+- `intensity`：只有 feel 有，`low` / `mid` / `high` 三档。**这是占位**：实测 deepseek-chat 只会给 mid
+  （`eval/README.md` 第三轮），机主 09-14 定三档太粗暴、后面要改，召回端消费 intensity 一起做（落地顺序第 4 步）。
+  现在召回端不读这个字段，只在标题里显示
 - 以后检索上线（落地顺序第 3 步）再加 `sha256` 和向量，这一版没有
 
 ## 两种记忆，两个写工具（2026-09-14，Notion ⑫）
