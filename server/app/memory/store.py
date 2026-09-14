@@ -32,6 +32,7 @@ log = logging.getLogger("nostos.memory")
 
 INDEX_NAME = "index.json"
 MAX_RECALL_CHARS = 6000
+EMPTY_RECALL = "（暂无长期记忆）"
 KINDS = ("item", "feel")
 INTENSITIES = ("low", "mid", "high")
 _INTENSITY_ZH = {"low": "淡", "mid": "中", "high": "浓"}
@@ -281,6 +282,9 @@ def delete_memory(name: str, user_id: str | None = None) -> bool:
         path.unlink()
     _remove_index_entry(mem_id, uid)
     if existed:
+        from app.memory.embed import forget_vector  # 延迟导入：embed 依赖这里的 memories_dir
+
+        forget_vector(mem_id, uid)
         log.info("memory deleted id=%s", mem_id)
     return existed
 
@@ -314,20 +318,26 @@ def _recall_header(meta: dict[str, Any], title: str, now: datetime) -> str:
     return " | ".join(parts)
 
 
+def render_recall_block(meta: dict[str, Any], title: str, content: str, now: datetime) -> str:
+    """一条记忆在召回块里的样子：带日期的标题 + 正文。recall.py 和这里的全量版共用。"""
+    return f"{_recall_header(meta, title, now)}\n{content.strip()}\n"
+
+
 def recall_text(
     user_id: str | None = None,
     max_chars: int = MAX_RECALL_CHARS,
     *,
     now: datetime | None = None,
 ) -> str:
-    """Concatenate memories for prompt injection (召回挂当轮尾).
+    """全量版召回：新的在前，每条标题带「记于 MM-DD」；feel 还带浓度。预算截断从最旧的那头砍。
 
-    新的在前，每条标题带「记于 MM-DD」；feel 还带浓度。预算截断从最旧的那头砍。
+    聊天 / wake 走的是 `recall.recall()`（关键词 + 向量 + RRF）；这份是它的退化形状，
+    也是测试和 `/memories` 之外看「模型眼里的记忆长什么样」的入口。
     """
     uid = user_id or settings.user_id
     items = list_memories(uid)
     if not items:
-        return "（暂无长期记忆）"
+        return EMPTY_RECALL
     at = now or datetime.now(timezone.utc)
 
     chunks: list[str] = []
@@ -336,8 +346,7 @@ def recall_text(
         got = read_memory(meta["id"], uid)
         if not got.get("ok"):
             continue
-        header = _recall_header(meta, got.get("title") or meta["id"], at)
-        block = f"{header}\n{got['content'].strip()}\n"
+        block = render_recall_block(meta, got.get("title") or meta["id"], got["content"], at)
         if used + len(block) > max_chars:
             remain = max_chars - used
             if remain > 80:
@@ -347,5 +356,5 @@ def recall_text(
         used += len(block)
 
     if not chunks:
-        return "（暂无长期记忆）"
+        return EMPTY_RECALL
     return "\n".join(chunks)

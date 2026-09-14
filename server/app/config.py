@@ -41,5 +41,26 @@ class Settings(BaseSettings):
     # 滚动块（episode）长度上限（字符）。提示词让模型自己压，这是兜底截断。
     episode_max_chars: int = 800
 
+    # --- 记忆检索的向量服务（docs/MIN_MEMORY.md「检索」）-----------------------
+    # 留空 = 不做向量，召回退回「关键词 + 新的在前」。DeepSeek 没有 embeddings 接口，
+    # 09-14 拍板先接本机 ombre-ollama 容器里的 bge-m3（1024 维，纯 CPU，不出网不要 key）：
+    #   宿主机跑：EMBED_BASE_URL=http://127.0.0.1:11434（要有 nostos-ollama-proxy 转发）
+    #   compose 跑：EMBED_BASE_URL=http://ombre-ollama:11434（docker-compose.ombre.yml 挂进那个网络）
+    # api_format：ollama（POST /api/embed）或 openai（POST /v1/embeddings，如硅基流动，
+    # base_url 要带 /v1、模型名写全 BAAI/bge-m3，Ombre README 记的两个坑）。
+    embed_base_url: str = ""
+    embed_model: str = "bge-m3"
+    embed_api_format: str = "ollama"
+    embed_api_key: str = ""
+    embed_timeout_seconds: float = 20.0
+    # 召回：query 拼最近几轮 + 当前句，上限字符；两路各取前 N；融合后取前 K；RRF 常数
+    recall_query_turns: int = 3
+    recall_query_max_chars: int = 1800
+    recall_per_path: int = 32
+    recall_top_k: int = 16
+    recall_rrf_k: int = 60
+    # 关键词一路：共有二元组少于这个数不算命中（单个二元组撞上是噪声，会被 RRF 顶到榜首）
+    recall_keyword_min_common: int = 2
+
 
 settings = Settings()

@@ -14,7 +14,7 @@ from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
 from app.llm import LLMError, chat_completion
 from app.locks import turn_lock
-from app.memory import recall_text
+from app.memory.recall import build_query, recall
 from app.prefs import load_wake
 from app.schedule.policy import (
     can_fire_now,
@@ -230,7 +230,8 @@ async def _generate_wake_line(user_id: str, intent: str) -> str:
     messages = build_messages(
         user_id=user_id,
         history_rows=turns,
-        recall=recall_text(user_id),
+        # wake 没有当前句，query 只有最近几轮
+        recall=await recall(user_id, query=build_query(turns)),
         trigger=Trigger(kind="wake", intent=intent),
         episode=seg.get("episode_text"),
     )

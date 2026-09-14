@@ -14,7 +14,7 @@ from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
 from app.llm import LLMError, chat_completion
 from app.locks import turn_lock
-from app.memory import recall_text
+from app.memory.recall import build_query, recall
 from app.nostools.registry import registry
 from app.schedule.scheduler import arm_idle_check, ensure_auto_wake
 from app.trace import new_turn
@@ -201,10 +201,11 @@ async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
     seg = await segments.before_turn(uid)
     prior = await db.list_segment_turns(uid, int(seg["tail_from_msg_id"]))
 
+    # 召回 query = 当前句 + 最近 3 轮（recall.build_query），不是只用当前一句
     messages = build_messages(
         user_id=uid,
         history_rows=prior,
-        recall=recall_text(uid),
+        recall=await recall(uid, query=build_query(prior, user_text), current=user_text),
         trigger=Trigger(kind="user", text=user_text),
         episode=seg.get("episode_text"),
     )
