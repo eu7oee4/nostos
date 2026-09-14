@@ -20,9 +20,11 @@ Notion「记忆系统设计对照」第 ⑫ 点要求上线前先量：feel 和 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import pathlib
 import sys
+from collections import Counter
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "server"))
 
@@ -66,11 +68,27 @@ async def one(tools: list[dict], phrase: str) -> dict[str, bool] | None:
     except Exception as e:  # noqa: BLE001 — 探针，失败也要记下来
         print(f"  ! {e}")
         return None
-    names = [c["function"]["name"] for c in (msg.get("tool_calls") or [])]
+    calls = msg.get("tool_calls") or []
+    names = [c["function"]["name"] for c in calls]
+    feels: list[dict] = []
+    for c in calls:
+        if c["function"]["name"] != "memory_write_feel":
+            continue
+        try:
+            args = json.loads(c["function"].get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        feels.append(
+            {
+                "intensity": str(args.get("intensity") or "?"),
+                "content": str(args.get("content") or "").replace("\n", " ")[:40],
+            }
+        )
     return {
         "feel": "memory_write_feel" in names,
         "item": "memory_write_item" in names,
         "legacy": "memory_write" in names,
+        "feels": feels,
     }
 
 
@@ -89,6 +107,13 @@ async def main() -> None:
         runs += len(results)
         extra = f"  (老名字 memory_write: {legacy})" if legacy else ""
         print(f"  {phrase[:22]:24s} feel {f}/{len(results)}   item {i}/{len(results)}{extra}")
+        # intensity 分布 + 每次写了什么：看三档给得稳不稳、同一句话会不会一次 low 一次 high
+        levels = Counter(x["intensity"] for r in results for x in r["feels"])
+        dist = " ".join(f"{k}={levels[k]}" for k in ("low", "mid", "high", "?") if levels[k])
+        print(f"  {'':24s} intensity: {dist or '-'}")
+        for r in results:
+            for x in r["feels"]:
+                print(f"  {'':24s}   [{x['intensity']:4s}] {x['content']}")
     if runs:
         print(f"  合计 feel {feel_hits}/{runs} = {feel_hits / runs:.0%}   item {item_hits}/{runs} = {item_hits / runs:.0%}")
 
