@@ -40,7 +40,8 @@ from app.nostools.registry import registry  # noqa: E402
 TOOL_NAMES = [
     "memory_list",
     "memory_read",
-    "memory_write",
+    "memory_write_item",
+    "memory_write_feel",
     "prefs_write",
     "prefs_list",
     "wake_set",

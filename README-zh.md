@@ -239,8 +239,10 @@ ngrok http 8787
 **长期记忆**（详见 [MIN_MEMORY.md](docs/MIN_MEMORY.md)）
 
 - 落在 `data/memories/<USER_ID>/*.md`，人能读、能改、能导出
-- 模型自己用 `memory_write` / `memory_read` / `memory_list` 读写
-- `GET /memories`、`GET /memories/{name}` 可以直接翻
+- 分两种：事件（`memory_write_item`）和感受（`memory_write_feel`，带 low / mid / high 浓度）；
+  `memory_read` / `memory_list` 读。召回新的在前、每条带记下的日期
+- `GET /memories`、`GET /memories/{name}` 可以直接翻；`DELETE /memories/{name}` 删一条，
+  网页右上角「记忆」抽屉也能看能删。模型没有删的工具
 
 **主动触达**（详见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
 

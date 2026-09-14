@@ -73,7 +73,9 @@ def _bootstrap() -> None:
     from app.nostools.memory_tools import (
         memory_list_handler,
         memory_read_handler,
+        memory_write_feel_handler,
         memory_write_handler,
+        memory_write_item_handler,
     )
     from app.nostools.prefs_tools import (
         prefs_list_handler,
@@ -121,12 +123,63 @@ def _bootstrap() -> None:
             handler=memory_read_handler,
         )
     )
+    # 记忆写入拆两路（Notion「记忆系统设计对照」第 ⑫ 点）。描述文本是唯一的杠杆
+    # （issue #9 的教训），所以两条描述各自把触发例句写满，别合并成一个带 kind 参数的。
+    _memory_write_params = {
+        "name": {
+            "type": "string",
+            "description": "Short stable id slug, e.g. mom-visit, hometown, job",
+        },
+        "title": {
+            "type": "string",
+            "description": "Human title, optional",
+        },
+        "content": {
+            "type": "string",
+            "description": "One or two short lines, in Chinese, in the user's own terms",
+        },
+    }
     registry.register(
         ToolSpec(
-            name="memory_write",
+            name="memory_write_item",
             description=(
-                "Create or overwrite a durable memory about the user. "
-                "Use for lasting facts (name, prefs, people, places), not chit-chat."
+                "Record a lasting FACT or EVENT about the user: a person, a place, "
+                "a job, a plan, a date, something that happened or will happen. "
+                "Triggers include 「我妈下周来杭州」「我换工作了」「我猫叫团子」"
+                "「下个月去北京出差」「我住在上海」. "
+                "Same id overwrites, so use a short stable id (mom-visit, job, cat). "
+                "This is for facts only — what the user FEELS about it goes to "
+                "memory_write_feel, in a separate call. Not for chit-chat. "
+                "Do not announce that you wrote it."
+            ),
+            builtin=True,
+            enabled=True,
+            side_effect="write",
+            parameters={
+                "type": "object",
+                "properties": dict(_memory_write_params),
+                "required": ["name", "content"],
+                "additionalProperties": False,
+            },
+            handler=memory_write_item_handler,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="memory_write_feel",
+            description=(
+                "Call this EVERY time the user reveals how they FEEL about "
+                "something that will still matter later — nervous, afraid, tired of, "
+                "excited, sad, guilty, resentful, attached, dreading, looking forward. "
+                "Triggers include 「有点紧张」「一想到…就烦」「我挺怕…的」「特别在意」"
+                "「舍不得」「说不上来为什么就是难受」「其实我挺开心的」. "
+                "A feeling is not a fact: 「我妈下周来」 is memory_write_item; "
+                "「和我妈长时间相处会紧张」 is this tool. Often one message needs both, "
+                "in two separate calls. "
+                "intensity: low = passing / mild, mid = it clearly weighs on them, "
+                "high = it dominates how they feel right now. "
+                "Without this call the feeling is gone once the conversation moves on. "
+                "Do not announce that you wrote it; just respond to them."
             ),
             builtin=True,
             enabled=True,
@@ -134,19 +187,31 @@ def _bootstrap() -> None:
             parameters={
                 "type": "object",
                 "properties": {
-                    "name": {
+                    **_memory_write_params,
+                    "intensity": {
                         "type": "string",
-                        "description": "Short id slug, e.g. name, hometown",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Human title, optional",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Markdown body to store",
+                        "enum": ["low", "mid", "high"],
+                        "description": "How strong the feeling is: low / mid / high",
                     },
                 },
+                "required": ["name", "content", "intensity"],
+                "additionalProperties": False,
+            },
+            handler=memory_write_feel_handler,
+        )
+    )
+    # 旧名字，保留一个版本周期当 item 的别名。能执行（chat_loop 认它），但不在
+    # 给模型看的 CHAT_TOOL_NAMES 里。
+    registry.register(
+        ToolSpec(
+            name="memory_write",
+            description="Deprecated alias of memory_write_item.",
+            builtin=True,
+            enabled=True,
+            side_effect="write",
+            parameters={
+                "type": "object",
+                "properties": dict(_memory_write_params),
                 "required": ["name", "content"],
                 "additionalProperties": False,
             },

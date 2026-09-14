@@ -211,10 +211,10 @@
       padding: 2rem 1rem;
     }
 
-    /* header 右上角两个按钮：说话方式（纠偏的隐私出口）、开启通知（Web Push）。 */
-    .bar { display: flex; align-items: flex-start; gap: 0.75rem; }
+    /* header 右上角三个按钮：记忆、说话方式（两个隐私出口：可看可删）、开启通知（Web Push）。 */
+    .bar { display: flex; align-items: flex-start; gap: 0.5rem; }
     .bar .grow { flex: 1 1 auto; min-width: 0; }
-    #prefsBtn, #pushBtn {
+    #memBtn, #prefsBtn, #pushBtn {
       flex: 0 0 auto;
       margin-top: 0.1rem;
       padding: 0.35rem 0.7rem;
@@ -307,6 +307,7 @@
           <h1>nostos</h1>
           <p class="meta">最小 wake · <a href="/wakes">/wakes</a> · <a href="/memories">/memories</a> · <a href="/health">/health</a></p>
         </div>
+        <button id="memBtn" type="button">记忆</button>
         <button id="prefsBtn" type="button">说话方式</button>
         <button id="pushBtn" type="button" hidden>开启通知</button>
       </div>
@@ -330,6 +331,15 @@
       <p class="hint">你纠正过的说话方式，他一直照着来。记错了就删掉。</p>
       <ul id="prefsList"></ul>
       <button class="close" id="prefsClose" type="button">关闭</button>
+    </div>
+  </div>
+
+  <div class="sheet" id="memSheet" hidden>
+    <div class="panel" role="dialog" aria-label="记忆">
+      <h2>记忆</h2>
+      <p class="hint">他记下的关于你的事和感受，新的在前。记忆是你的，不想留的就删掉；他自己删不了。</p>
+      <ul id="memList"></ul>
+      <button class="close" id="memClose" type="button">关闭</button>
     </div>
   </div>
 
@@ -571,6 +581,75 @@
     });
     prefsSheet.addEventListener('click', (e) => {
       if (e.target === prefsSheet) prefsSheet.hidden = true;
+    });
+
+    // 记忆：照说话方式那个抽屉做。可看可删（DELETE /memories/{id}），模型没有删的工具。
+    const memSheet = document.getElementById('memSheet');
+    const memList = document.getElementById('memList');
+    const INTENSITY_ZH = { low: '淡', mid: '中', high: '浓' };
+
+    function memDate(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return '';
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return d.getFullYear() === new Date().getFullYear()
+        ? `${mm}-${dd}` : `${d.getFullYear()}-${mm}-${dd}`;
+    }
+
+    async function loadMemories() {
+      memList.innerHTML = '';
+      const r = await fetch('/memories');
+      const data = await r.json();
+      const items = data.memories || [];
+      if (!items.length) {
+        const li = document.createElement('li');
+        li.textContent = '还没有记下任何事。';
+        memList.appendChild(li);
+        return;
+      }
+      items.forEach(m => {
+        const li = document.createElement('li');
+
+        const txt = document.createElement('div');
+        txt.className = 'txt';
+        txt.textContent = m.title || m.id;
+        const id = document.createElement('span');
+        id.className = 'id';
+        const tag = m.kind === 'feel'
+          ? `感受 · 浓度${INTENSITY_ZH[m.intensity] || '中'}` : '事件';
+        id.textContent = [tag, memDate(m.updated_at), m.id].filter(Boolean).join(' · ');
+        txt.appendChild(id);
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = '删除';
+        del.addEventListener('click', async () => {
+          del.disabled = true;
+          try {
+            await fetch('/memories/' + encodeURIComponent(m.id), { method: 'DELETE' });
+            await loadMemories();
+          } catch (ex) {
+            del.disabled = false;
+          }
+        });
+
+        li.appendChild(txt);
+        li.appendChild(del);
+        memList.appendChild(li);
+      });
+    }
+
+    document.getElementById('memBtn').addEventListener('click', () => {
+      memSheet.hidden = false;
+      loadMemories().catch(e => { err.textContent = String(e); });
+    });
+    document.getElementById('memClose').addEventListener('click', () => {
+      memSheet.hidden = true;
+    });
+    memSheet.addEventListener('click', (e) => {
+      if (e.target === memSheet) memSheet.hidden = true;
     });
 
     // --- Web Push --------------------------------------------------------

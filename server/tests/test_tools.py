@@ -44,9 +44,37 @@ async def test_unknown_and_unlisted_tools(monkeypatch):
 
 @pytest.mark.anyio
 async def test_write_tool_runs_and_returns_dict(data_dir):
-    out = await chat_loop._run_tool("memory_write", {"name": "hometown", "content": "上海"})
-    assert out["ok"] is True and out["id"] == "hometown"
+    out = await chat_loop._run_tool("memory_write_item", {"name": "hometown", "content": "上海"})
+    assert out["ok"] is True and out["id"] == "hometown" and out["kind"] == "item"
     assert (data_dir / "memories" / "local" / "hometown.md").is_file()
+
+
+@pytest.mark.anyio
+async def test_feel_tool_needs_intensity(data_dir):
+    out = await chat_loop._run_tool(
+        "memory_write_feel", {"name": "mom-tension", "content": "和妈妈长时间相处会紧张"}
+    )
+    assert out["ok"] is False and "intensity" in out["detail"]
+    out = await chat_loop._run_tool(
+        "memory_write_feel",
+        {"name": "mom-tension", "content": "和妈妈长时间相处会紧张", "intensity": "mid"},
+    )
+    assert out["ok"] is True and out["kind"] == "feel" and out["intensity"] == "mid"
+
+
+@pytest.mark.anyio
+async def test_legacy_memory_write_still_runs_but_is_not_offered(data_dir):
+    """老名字一个版本周期内还能执行（当 item），但不在给模型看的那套里。"""
+    out = await chat_loop._run_tool("memory_write", {"name": "hometown", "content": "上海"})
+    assert out["ok"] is True and out["kind"] == "item"
+    offered = {t["function"]["name"] for t in registry.openai_tools(chat_loop.CHAT_TOOL_NAMES)}
+    assert "memory_write" not in offered
+    assert {"memory_write_item", "memory_write_feel"} <= offered
+
+
+def test_no_memory_delete_tool_for_the_model():
+    assert "memory_delete" not in registry.tools
+    assert not any("delete" in n and n.startswith("memory") for n in chat_loop.CHAT_TOOL_NAMES)
 
 
 @pytest.mark.anyio

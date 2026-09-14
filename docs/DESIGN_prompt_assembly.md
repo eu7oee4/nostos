@@ -75,7 +75,7 @@ PLAN §4.3 已拍板，**纠正「按节点每轮重铸对话」的误解**：
 
 当前产品本体（不是「助手插件」）：
 
-- `memory_list` / `memory_read` / `memory_write`
+- `memory_list` / `memory_read` / `memory_write_item` / `memory_write_feel`（09-14 拆的，原 `memory_write` 留作别名一个版本周期）
 - `wake_set` / `wake_list` / `wake_cancel`（文案写清：`delay_seconds` 相对 / `wake_at` 绝对 ISO；**覆盖 = cancel 旧 + set 新，或 set 同逻辑 id 替换**）
 
 说明文字尽量少改；改 tools schema = 部分厂商缓存一并失效。
