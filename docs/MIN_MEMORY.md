@@ -89,7 +89,10 @@ data/memories/<USER_ID>/
 
 - 每次写入 `nostos.memory` INFO 一行：`memory written kind=feel intensity=mid id=mom-tension`
 - 轮末 `nostos.chat` 那行汇总多了 `mem_item=N mem_feel=N`（Notion ⑦「每段的 item / feel 写入数」，
-  现在还没有会话段，先按轮记）。feel 长期为零而对话里明明有情绪，就是该加提炼兜底的信号
+  先按轮记，日志里同一行带 `segment=<id>`，按段汇总 grep 它）。feel 长期为零而对话里明明有
+  情绪，就是该加提炼兜底的信号
+- `data/episodes/<USER_ID>/seg-<段id>.md` 是另一种东西：角色自己写的回忆（[SEGMENTS.md](./SEGMENTS.md)），
+  可看不可改，不进 index、不进召回。和这里的 item / feel 条目是两个维度（PLAN §4.2「两种归属」）
 
 ## 自测
 

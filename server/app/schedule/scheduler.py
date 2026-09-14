@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app import db, push
+from app import db, push, segments
 from app.config import settings
 from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
@@ -167,6 +167,47 @@ async def fire_wake(wake_id: int) -> None:
 
     if source == "auto":
         await ensure_auto_wake(uid)
+    # wake 也是一次 LLM 调用，闲置计时从这儿重新起算
+    arm_idle_check(uid)
+
+
+# --- 闲置检查（会话段，docs/SEGMENTS.md）--------------------------------------
+#
+# 不是 wake：它不开口、不落消息，只在段过了软线且 episode 不新鲜时提炼一份放着。
+# 每次聊天 / wake 之后重挂一次（replace_existing），所以永远只有一条，指向
+# 「上一次调用 + 闲置阈值」。到点拿轮锁跑 segments.idle_check。
+
+
+def _idle_key(user_id: str) -> str:
+    return f"idle-{user_id}"
+
+
+def arm_idle_check(user_id: str | None = None) -> bool:
+    """把闲置检查挂到 `now + segment_idle_minutes`。调度器没起来（测试 / 关机中）就不挂。"""
+    uid = user_id or settings.user_id
+    if _scheduler is None or not _scheduler.running:
+        return False
+    when = _utc_now() + timedelta(minutes=settings.segment_idle_minutes)
+    _scheduler.add_job(
+        _idle_fire,
+        trigger="date",
+        run_date=when,
+        args=[uid],
+        id=_idle_key(uid),
+        replace_existing=True,
+        misfire_grace_time=None,  # 闲置检查晚了也要跑：越晚越闲置
+    )
+    return True
+
+
+async def _idle_fire(user_id: str) -> None:
+    new_turn("idle")
+    async with turn_lock(user_id):
+        outcome = await segments.idle_check(user_id)
+    log.info("idle check user=%s -> %s", user_id, outcome)
+    if outcome == "not_idle":
+        # 中间有过调用（多半是 wake），那次调用没重挂或重挂被这次覆盖了——按它重挂
+        arm_idle_check(user_id)
 
 
 async def _generate_wake_line(user_id: str, intent: str) -> str:
@@ -182,12 +223,16 @@ async def _generate_wake_line(user_id: str, intent: str) -> str:
 
     模型挂了就用兜底那句，但**要记日志**：静默降级和有意的降级，差别就在留痕。
     """
-    turns = await db.list_recent_turns(user_id, limit=40)
+    # 历史从当前段拿（docs/SEGMENTS.md），和聊天同一份前缀，逐字节相同才吃同一份缓存。
+    # wake 不做「回来时重铸」那一步：它是系统到点来的，不是用户回来；这一轮落成一行
+    # assistant 之后算一轮，会让 episode 旧一轮。
+    seg, turns = await segments.context(user_id)
     messages = build_messages(
         user_id=user_id,
         history_rows=turns,
         recall=recall_text(user_id),
         trigger=Trigger(kind="wake", intent=intent),
+        episode=seg.get("episode_text"),
     )
     try:
         msg = await chat_completion(messages, tools=None)

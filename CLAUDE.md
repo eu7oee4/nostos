@@ -10,6 +10,7 @@
 | `server/app/context/`（拼装） | [docs/PROMPT_ASSEMBLY.md](docs/PROMPT_ASSEMBLY.md)——尤其「为什么要长得一样」。那几条是实测出来的，别顺手改回去 |
 | `server/app/schedule/`（wake） | [docs/MIN_WAKE.md](docs/MIN_WAKE.md)。命名一律 **wake**，不叫 job。动 `policy.py` / 护栏再加一份 [docs/RANDOM_WAKE.md](docs/RANDOM_WAKE.md) |
 | `server/app/memory/` | [docs/MIN_MEMORY.md](docs/MIN_MEMORY.md) |
+| `server/app/segments.py`（会话段 / 提炼 / 重铸） | [docs/SEGMENTS.md](docs/SEGMENTS.md)。三条规则别破：重铸只在硬闸轮末或回来时缓存已死；重铸前 episode 必须新鲜；闲置只提炼不关段 |
 | 产品取舍 / 该不该做这个功能 | [docs/PLAN_companion.md](docs/PLAN_companion.md)、[docs/DESIGN_prompt_assembly.md](docs/DESIGN_prompt_assembly.md) |
 
 本地怎么跑：见 [README-zh.md](README-zh.md)。

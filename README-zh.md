@@ -228,7 +228,10 @@ ngrok http 8787
 
 - `GET /health` — 含 `has_key` / `memory_count` / `pending_wakes` / `random_wake`
 - `GET /stats` — 「它先开口」的接受率（最近 7 天开火的 wake 有多少条 6 小时内等到回话）、
-  被护栏挡掉 / 停机漏掉的按原因分桶
+  被护栏挡掉 / 停机漏掉的按原因分桶；`segments` 里是当前会话段多大、episode 利用率
+- 会话段（详见 [SEGMENTS.md](docs/SEGMENTS.md)）：历史不再是硬编码 40 行。段内纯追加吃缓存；
+  过硬线或用户回来时缓存已死就重铸 = 固定前缀 + 上一份 episode + 最近 10 轮原文。episode 是他
+  自己写的回忆，`GET /episodes` 可看不可改，文件在 `data/episodes/<USER_ID>/`
 - `GET /messages` — 当前 `USER_ID`（默认 `local`）的历史，每行带 `status`（`pending` / `done` / `failed`）和 `reason`
 - `POST /chat` `{"content":"..."}` — 写入用户句（`pending`）→ 调模型 → 写入回复并标 `done`（一个事务）。
   模型挂了回 5xx，JSON 带 `message_id`，那句已落库标 `failed` + `reason`

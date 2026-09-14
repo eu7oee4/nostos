@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.chat_loop import RetryRefused, TurnFailed, retry_chat, run_chat
 from app.config import settings
-from app import db
+from app import db, segments
 from app.llm import LLMError
 from app.memory import delete_memory, list_memories, read_memory, safe_id
 from app.prefs import delete_style, list_style, load_wake, save_wake
@@ -90,7 +90,23 @@ async def stats(days: int = 7, reply_hours: int = 6):
         "wakes": await db.wake_stats(settings.user_id, days=days, reply_hours=reply_hours),
         "prefs_count": len(list_style()),
         "memory_count": len(list_memories(settings.user_id)),
+        # 会话段 + episode 利用率（Notion ⑦）：提炼了多少、多少真用于重铸、多少白烧
+        "segments": await segments.status(settings.user_id),
     }
+
+
+@router.get("/episodes")
+async def get_episodes(limit: int = 50):
+    """角色日记（PLAN §4.2「用户可看不可改」）。没有 DELETE，也没有 PUT——那是他的。"""
+    return {"user_id": settings.user_id, "episodes": await db.list_episodes(settings.user_id, limit)}
+
+
+@router.get("/episodes/{episode_id}")
+async def get_episode(episode_id: int):
+    row = await db.get_episode(episode_id)
+    if not row or row["user_id"] != settings.user_id:
+        raise HTTPException(404, "not found")
+    return row
 
 
 @router.get("/messages")

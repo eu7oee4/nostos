@@ -90,7 +90,56 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 CREATE INDEX IF NOT EXISTS idx_push_user
     ON push_subscriptions (user_id);
+
+-- 会话段（PLAN §4.3 / Notion「记忆系统设计对照」⑨）。一段 = 拼装给模型看的那截历史。
+-- 当前段 = 该用户最新一行。tail_from_msg_id：历史从这条消息开始（含）；0 = 从头。
+-- episode_text 是这段开头那块「上一段的回忆」，**段内冻结**（所以能被缓存），
+-- 从 episodes 表复制过来而不是引用，之后 episode 被覆盖也不影响已开的段。
+-- reason：init（首次 / 老库迁移）、hard（硬闸）、dead_cache（用户回来时缓存已死）。
+CREATE TABLE IF NOT EXISTS segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    tail_from_msg_id INTEGER NOT NULL DEFAULT 0,
+    episode_id INTEGER,
+    episode_text TEXT,
+    reason TEXT NOT NULL DEFAULT 'init',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_segments_user
+    ON segments (user_id, id);
+
+-- episode = 角色自己写的一段回忆（原模型、原上下文提炼）。不进 memories、不做向量、
+-- 不进召回；用途只有一个：重铸时进新段前缀。
+--   status  stored      提炼好了放着（闲置提炼、或硬闸提炼还没重铸那几毫秒）
+--           used        用于重铸了
+--           superseded  没用上就被同一用户下一次提炼覆盖了——这个占比高就是闲置提炼在白烧
+--   trigger idle / hard
+--   covers_to_msg_id  提炼时看到的最后一条消息；「新鲜」= 之后的轮数 ≤ segment_tail_turns
+-- token 三列 + ms 是 Notion ⑦ 要的观测：cache_hit 接近 prompt 才说明「提炼永远是缓存读」成立。
+CREATE TABLE IF NOT EXISTS episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    segment_id INTEGER NOT NULL,
+    covers_to_msg_id INTEGER NOT NULL,
+    trigger TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('stored', 'used', 'superseded')),
+    content TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    cache_hit_tokens INTEGER,
+    completion_tokens INTEGER,
+    ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_episodes_user_status
+    ON episodes (user_id, status, id);
 """
+
+SEGMENT_COLS = "id, user_id, tail_from_msg_id, episode_id, episode_text, reason, created_at"
+EPISODE_COLS = (
+    "id, user_id, segment_id, covers_to_msg_id, trigger, status, content, "
+    "prompt_tokens, cache_hit_tokens, completion_tokens, ms, created_at, used_at"
+)
 
 
 def db_path() -> Path:
@@ -717,3 +766,268 @@ async def count_push_subscriptions(user_id: str | None = None) -> int:
         )
         row = await cur.fetchone()
         return int(row["n"] if row else 0)
+
+
+# --- 会话段与 episode（docs/SEGMENTS.md）------------------------------------
+#
+# 「轮」的口径：一行 done 的 assistant = 一轮。用户轮产生一行、wake 也产生一行，
+# 所以 wake 那一轮自然算进轮数（Notion ⑨：它会让 episode 旧一轮）。
+
+
+async def current_segment(user_id: str) -> dict[str, Any] | None:
+    async with _connect() as conn:
+        cur = await conn.execute(
+            f"SELECT {SEGMENT_COLS} FROM segments WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def open_segment(
+    user_id: str,
+    *,
+    tail_from_msg_id: int,
+    reason: str,
+    episode_id: int | None = None,
+    episode_text: str | None = None,
+) -> dict[str, Any]:
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "INSERT INTO segments (user_id, tail_from_msg_id, episode_id, episode_text, reason) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, int(tail_from_msg_id), episode_id, episode_text, reason),
+        )
+        seg_id = cur.lastrowid
+        await conn.commit()
+        cur = await conn.execute(f"SELECT {SEGMENT_COLS} FROM segments WHERE id = ?", (seg_id,))
+        row = await cur.fetchone()
+        return dict(row)
+
+
+async def ensure_segment(user_id: str, *, init_window: int = 40) -> dict[str, Any]:
+    """当前段；没有就开第一段。
+
+    老库（会话段之前攒下的历史）开第一段时 tail 取最近 `init_window` 行——和原来
+    `list_recent_turns(limit=40)` 看到的一样，升级那一刻模型眼里的历史不变。
+    新库 tail 从 0 开始。
+    """
+    seg = await current_segment(user_id)
+    if seg:
+        return seg
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT id FROM messages WHERE user_id = ? AND status = 'done' "
+            "AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT ?",
+            (user_id, init_window),
+        )
+        ids = [int(r["id"]) for r in await cur.fetchall()]
+    tail_from = min(ids) if ids else 0
+    return await open_segment(user_id, tail_from_msg_id=tail_from, reason="init")
+
+
+async def list_segment_turns(
+    user_id: str, tail_from_msg_id: int, limit: int = 2000
+) -> list[dict[str, Any]]:
+    """本段给拼装用的历史：done 的 user / assistant，从 tail_from 起（含），正序。
+
+    `limit` 只是保险丝：硬闸正常工作时段长不到这儿；模型连续挂掉、提炼一直失败时
+    段会越过硬线继续长，这条保证不会把整个库塞进 prompt。
+    """
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            "WHERE user_id = ? AND id >= ? AND status = 'done' "
+            "AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT ?",
+            (user_id, int(tail_from_msg_id), limit),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in reversed(rows)]
+
+
+async def segment_chars(user_id: str, tail_from_msg_id: int) -> int:
+    """本段对话正文字符数（软线 / 硬线的量尺，不含 episode 块）。"""
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(content)), 0) AS n FROM messages "
+            "WHERE user_id = ? AND id >= ? AND status = 'done' "
+            "AND role IN ('user', 'assistant')",
+            (user_id, int(tail_from_msg_id)),
+        )
+        row = await cur.fetchone()
+        return int(row["n"] if row else 0)
+
+
+async def tail_from_for(user_id: str, turns: int) -> int:
+    """最近 `turns` 轮从哪条消息开始（重铸的尾巴）。
+
+    找最近 N 行 done 的 assistant，最老那行之前紧挨着的 done 行若是 user 就从它起
+    （那是这一轮的用户句）；是 assistant（说明最老那轮是 wake）就从 assistant 起。
+    历史不足 N 轮回 0（全部）。
+    """
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT id FROM messages WHERE user_id = ? AND role = 'assistant' "
+            "AND status = 'done' ORDER BY id DESC LIMIT ?",
+            (user_id, max(1, int(turns))),
+        )
+        ids = [int(r["id"]) for r in await cur.fetchall()]
+        if len(ids) < turns:
+            return 0
+        oldest = min(ids)
+        cur = await conn.execute(
+            "SELECT id, role FROM messages WHERE user_id = ? AND id < ? AND status = 'done' "
+            "AND role IN ('user', 'assistant') ORDER BY id DESC LIMIT 1",
+            (user_id, oldest),
+        )
+        prev = await cur.fetchone()
+        if prev and prev["role"] == "user":
+            return int(prev["id"])
+        return oldest
+
+
+async def turns_since(user_id: str, msg_id: int) -> int:
+    """某条消息之后又过了几轮（episode 新不新鲜用）。"""
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT COUNT(*) AS n FROM messages WHERE user_id = ? AND id > ? "
+            "AND role = 'assistant' AND status = 'done'",
+            (user_id, int(msg_id)),
+        )
+        row = await cur.fetchone()
+        return int(row["n"] if row else 0)
+
+
+async def last_llm_at(user_id: str) -> datetime | None:
+    """上一次任何 LLM 调用是什么时候（「缓存死了没有」的起点，Notion ⑨ 计时口径）。
+
+    不另存状态：聊天和 wake 的调用都落成一行 assistant，提炼落成一行 episode，
+    两边取最新的那个。工具循环里多调几次也都在同一轮里，时刻差几秒无所谓。
+    """
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT created_at FROM messages WHERE user_id = ? AND role = 'assistant' "
+            "AND status = 'done' ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        a = await cur.fetchone()
+        cur = await conn.execute(
+            "SELECT created_at FROM episodes WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        e = await cur.fetchone()
+    stamps = [_parse_ts(r["created_at"]) for r in (a, e) if r]
+    stamps = [s for s in stamps if s]
+    return max(stamps) if stamps else None
+
+
+async def create_episode(
+    user_id: str,
+    *,
+    segment_id: int,
+    covers_to_msg_id: int,
+    trigger: str,
+    content: str,
+    prompt_tokens: int | None = None,
+    cache_hit_tokens: int | None = None,
+    completion_tokens: int | None = None,
+    ms: int | None = None,
+) -> dict[str, Any]:
+    """落一份 episode（stored）。同一用户之前还 stored 着没用上的那些标 superseded：
+    它们白费的只是那次调用，留痕是为了算利用率。"""
+    async with _connect() as conn:
+        await conn.execute(
+            "UPDATE episodes SET status = 'superseded' WHERE user_id = ? AND status = 'stored'",
+            (user_id,),
+        )
+        cur = await conn.execute(
+            "INSERT INTO episodes (user_id, segment_id, covers_to_msg_id, trigger, status, "
+            "content, prompt_tokens, cache_hit_tokens, completion_tokens, ms) "
+            "VALUES (?, ?, ?, ?, 'stored', ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                int(segment_id),
+                int(covers_to_msg_id),
+                trigger,
+                content,
+                prompt_tokens,
+                cache_hit_tokens,
+                completion_tokens,
+                ms,
+            ),
+        )
+        ep_id = cur.lastrowid
+        await conn.commit()
+        cur = await conn.execute(f"SELECT {EPISODE_COLS} FROM episodes WHERE id = ?", (ep_id,))
+        row = await cur.fetchone()
+        return dict(row)
+
+
+async def mark_episode_used(episode_id: int) -> bool:
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "UPDATE episodes SET status = 'used', "
+            "used_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+            "WHERE id = ? AND status = 'stored'",
+            (int(episode_id),),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+async def latest_episode(
+    user_id: str, statuses: tuple[str, ...] = ("stored", "used")
+) -> dict[str, Any] | None:
+    """最新一份没被覆盖的 episode（新不新鲜看它）。"""
+    marks = ",".join("?" for _ in statuses)
+    async with _connect() as conn:
+        cur = await conn.execute(
+            f"SELECT {EPISODE_COLS} FROM episodes WHERE user_id = ? AND status IN ({marks}) "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, *statuses),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def get_episode(episode_id: int) -> dict[str, Any] | None:
+    async with _connect() as conn:
+        cur = await conn.execute(
+            f"SELECT {EPISODE_COLS} FROM episodes WHERE id = ?", (int(episode_id),)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def list_episodes(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 500))
+    async with _connect() as conn:
+        cur = await conn.execute(
+            f"SELECT {EPISODE_COLS} FROM episodes WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def episode_stats(user_id: str) -> dict[str, Any]:
+    """Notion ⑦ 的 episode 利用率：提炼总数、用于重铸、被覆盖；再按触发源分。"""
+    async with _connect() as conn:
+        cur = await conn.execute(
+            "SELECT status, trigger, COUNT(*) AS n FROM episodes WHERE user_id = ? "
+            "GROUP BY status, trigger",
+            (user_id,),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+    by_status: dict[str, int] = {"stored": 0, "used": 0, "superseded": 0}
+    by_trigger: dict[str, int] = {}
+    for r in rows:
+        by_status[r["status"]] = by_status.get(r["status"], 0) + int(r["n"])
+        by_trigger[r["trigger"]] = by_trigger.get(r["trigger"], 0) + int(r["n"])
+    total = sum(by_status.values())
+    return {
+        "distilled": total,
+        "used": by_status["used"],
+        "superseded": by_status["superseded"],
+        "stored": by_status["stored"],
+        "by_trigger": by_trigger,
+    }

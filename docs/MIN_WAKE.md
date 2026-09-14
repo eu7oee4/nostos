@@ -141,6 +141,13 @@ PLAN §11 候选指标里最便宜的那个先算出来：「它先开口」的�
 落库、推送的日志全带同一个 id；聊天那边是 `[chat-xxxxxxxx]`。模型挂了用兜底句
 「嘿，我来看你啦。」时**记 WARNING**，不静默。
 
+## 同一个调度器上还挂着一条不是 wake 的东西
+
+会话段的闲置检查（`scheduler.arm_idle_check`，id `idle-<user>`）。它不开口、不落消息、不推送，
+到点只在段过了软线且 episode 不新鲜时提炼一份 episode 存着。每次聊天 / wake 之后重挂，
+永远只有一条。细节在 [SEGMENTS.md](./SEGMENTS.md)。wake 自己也从当前段拿历史
+（`segments.context`），前缀和聊天逐字节相同。
+
 ## 还没做
 
 微信 / 邮件渠道（搁置，见 PLAN §4.1）、护栏的设置页（现在只能 `PUT /prefs/wake`，

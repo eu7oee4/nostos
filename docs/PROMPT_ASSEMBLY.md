@@ -9,10 +9,12 @@ system      固定前缀（app/prompts/system.md）
 system      【用户档案】（data/user_profile.json，缺文件整块省略）
 system      【伙伴人格 / persona】（data/persona.md，缺文件整块省略）
 system      【纠正过的说话方式】（data/prefs.json 的 style[]，一条都没有就整块省略）
+system      【上一段的回忆，你自己写的】（segments.episode_text，重铸那一刻定下、段内冻结；
+            第一段没有，整块省略。见 SEGMENTS.md）
 user        【09-08 周二 11:24 中午】
             我是谁
 assistant   你是眠眠，住在杭州，喜欢深夜敲代码。
-            …（段内历史，纯追加）
+            …（本段历史，纯追加。段 = 重铸时保留的最近 10 轮 + 之后所有轮，不再是硬编码 40 行）
 system      现在浮现在你脑海里的记忆有：
             （每条都标了记下的日期，新的在前。那是当时的事，不一定是现在的情况。）
             ### 妈妈来杭州 (`mom-visit`) | 记于 09-03
@@ -114,9 +116,13 @@ user【09-08 周二 11:38】
                                       ↑ 断点
 ```
 
-每轮重付「上一轮 user + 上一轮 assistant + 本轮」，前面全命中。按 40 条窗口算
-命中率 95%+。要做到纯追加，就得把「距离」也冻进历史（它写下就永远为真），
-代价是历史里多一行。**这一版按「历史只留戳」定的。**
+每轮重付「上一轮 user + 上一轮 assistant + 本轮」，前面全命中。要做到纯追加，就得把
+「距离」也冻进历史（它写下就永远为真），代价是历史里多一行。**这一版按「历史只留戳」定的。**
+
+历史的边界是**会话段**（2026-09-14 起，[SEGMENTS.md](./SEGMENTS.md)）：段内纯追加，最老那行
+不再每轮掉出去。重铸（硬闸轮末 / 回来时缓存已死）那一次全 miss 是预期的，新段前缀短。
+提炼 episode 走 wake 那条管线：前缀逐字节同聊天，尾巴挂〔提炼〕触发句，09-14 实测
+1049 个 prompt token 命中 896，只有触发句 miss。
 
 ⚠️ 这次改动动了戳的格式（`[MM-DD HH:MM]` → `【MM-DD 周X HH:MM 时段】`）并去掉了独立的
 「此刻：…」后缀，**上线第一次会全 miss 一次**。之后回到上面那个稳态。
@@ -180,7 +186,7 @@ miss 稳定在一轮的量级 = 断点位置符合预期；miss ≈ 整个窗口
 
 ## Out of scope (later)
 
-Onboarding cards / `ask_user`、会话段软/硬闸重铸、killing random-wake script path。
+Onboarding cards / `ask_user`、killing random-wake script path。（会话段软/硬闸重铸 09-14 落了，见 SEGMENTS.md。）
 
 ## Optional local files
 

@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Any
 
-from app import db
+from app import db, segments
 from app.config import settings
 from app.context.assemble import Trigger, build_messages
 from app.context.scrub import scrub_reply
@@ -16,7 +16,7 @@ from app.llm import LLMError, chat_completion
 from app.locks import turn_lock
 from app.memory import recall_text
 from app.nostools.registry import registry
-from app.schedule.scheduler import ensure_auto_wake
+from app.schedule.scheduler import arm_idle_check, ensure_auto_wake
 from app.trace import new_turn
 
 log = logging.getLogger("nostos.chat")
@@ -149,6 +149,11 @@ async def _finish(
         await ensure_auto_wake(uid)
     except Exception:  # noqa: BLE001
         log.warning("ensure_auto_wake after chat failed", exc_info=True)
+    # 闲置计时从这轮说完起算（docs/SEGMENTS.md）。同样不能影响回复。
+    try:
+        arm_idle_check(uid)
+    except Exception:  # noqa: BLE001
+        log.warning("arm_idle_check after chat failed", exc_info=True)
     return {
         "user_id": uid,
         "message": assistant,
@@ -191,14 +196,17 @@ async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
     user_msg_id = int(user_row["id"])
     user_text = str(user_row["content"])
 
-    # 只有 done 的轮次进历史；当前句是 pending，由 Trigger 单独带（不重复）。
-    prior = await db.list_recent_turns(uid, limit=40)
+    # 用户回来：缓存已死且有新鲜 episode 就先重铸（docs/SEGMENTS.md）。
+    # 历史 = 当前段：只有 done 的轮次；当前句是 pending，由 Trigger 单独带（不重复）。
+    seg = await segments.before_turn(uid)
+    prior = await db.list_segment_turns(uid, int(seg["tail_from_msg_id"]))
 
     messages = build_messages(
         user_id=uid,
         history_rows=prior,
         recall=recall_text(uid),
         trigger=Trigger(kind="user", text=user_text),
+        episode=seg.get("episode_text"),
     )
 
     tools = registry.openai_tools(CHAT_TOOL_NAMES)
@@ -210,13 +218,15 @@ async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
 
     def _summary(outcome: str) -> None:
         log.info(
-            "turn %s ms=%s llm_calls=%s tool_calls=%s mem_item=%s mem_feel=%s history=%s",
+            "turn %s ms=%s llm_calls=%s tool_calls=%s mem_item=%s mem_feel=%s "
+            "segment=%s history=%s",
             outcome,
             int((time.monotonic() - started) * 1000),
             llm_calls,
             tool_calls_total,
             mem_written["item"],
             mem_written["feel"],
+            seg["id"],
             len(prior),
         )
 
@@ -228,6 +238,13 @@ async def _run_turn(uid: str, user_row: dict[str, Any]) -> dict[str, Any]:
             _summary("not_pending")
             raise TurnFailed(user_msg_id, "not_pending", None)
         _summary(outcome)
+        # 轮末硬闸：段过了硬线就提炼 + 重铸。回复已经落库，这一步炸了只记日志——
+        # 但它**在锁内、在返回之前**跑：硬闸提炼那几秒用户又发了消息，下一轮等它，
+        # 可以接受（Notion ⑨ 施工细节）。
+        try:
+            await segments.after_turn(uid)
+        except Exception:  # noqa: BLE001
+            log.warning("hard gate after turn failed", exc_info=True)
         return await _finish(uid, assistant, touched, wakes_touched)
 
     try:
