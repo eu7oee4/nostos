@@ -21,6 +21,9 @@ _RETRY_DELAY_SECONDS = 1.5
 _TIMEOUT_SECONDS = 120.0
 
 
+last_usage: dict[str, Any] | None = None
+
+
 class LLMError(Exception):
     def __init__(self, status: int, body: str):
         self.status = status
@@ -86,6 +89,10 @@ async def chat_completion(
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     usage = data.get("usage")
+    # 最近一次调用的 usage 留一份给调用方看（segments.distill 记 token 数用）。
+    # 单进程单用户，一个模块变量够了；测试里假的 chat_completion 不会设它，读到 None。
+    global last_usage
+    last_usage = usage if isinstance(usage, dict) else None
     log.info(
         "llm call ms=%s tools=%s attempts=%s usage %s",
         elapsed_ms,

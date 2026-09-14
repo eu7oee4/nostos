@@ -62,10 +62,25 @@ def _daypart(hour: int) -> str:
 class Trigger:
     """Current-turn trigger (not part of frozen dialog history)."""
 
-    kind: Literal["user", "wake"]
+    kind: Literal["user", "wake", "distill"]
     text: str = ""
     note: str | None = None
     intent: str | None = None
+
+
+EPISODE_HEADER = "【上一段的回忆，你自己写的】"
+
+# 提炼触发句（Notion ⑨）。格式强制三栏：角色只提供口吻，格式不交给他自由发挥，
+# 否则 deepseek-chat 容易写成散文。「把上面那份并进来」让 episode 是累积的，
+# 不然第三段就把第一段忘了。这句和它的产物都不进 messages 表。
+DISTILL_LINE = (
+    "停一下，这条不用回复对方。把这一段聊天写成一份回忆，写给之后的你自己看，"
+    "让你下次接着聊的时候知道刚才聊到哪了。站在你自己这边写：「我」是你，是回话的这一方；"
+    "对方写「她」「他」或名字，不要替对方写日记。固定三栏：「主题：」一行；「摘要：」两三句；"
+    "「正文：」按时间顺序，她说了什么、我怎么回的、我当时怎么想，写具体的事和原话，"
+    "别写感想套话。总长不超过 {max_chars} 字。"
+    f"如果上面已经有一份{EPISODE_HEADER}，把它并进来：旧的压短，新的写细。只输出这三栏。"
+)
 
 
 def _zone(tz_name: str | None = None) -> ZoneInfo:
@@ -146,6 +161,11 @@ def _trigger_message(
         lines.append(trigger.text or "")
         return {"role": "user", "content": "\n".join(lines)}
 
+    if trigger.kind == "distill":
+        # 提炼：和 wake 同一条管线、同一个〔〕框。前缀逐字节和聊天一样，所以是缓存读。
+        lines.append("〔" + DISTILL_LINE.format(max_chars=settings.episode_max_chars) + "〕")
+        return {"role": "user", "content": "\n".join(lines)}
+
     # wake (7b)：不是她说话，用〔〕框住——user 槽里除了她的原话就只有这一种东西，
     # 得一眼分得开，免得重铸之后被读成"她说了句奇怪的话"。
     #
@@ -178,11 +198,13 @@ def build_messages(
     recall: str,
     trigger: Trigger,
     now: datetime | None = None,
+    episode: str | None = None,
 ) -> list[dict[str, Any]]:
     """Assemble LLM messages in cache-stable order.
 
     history_rows = prior turns only (id/role/content/created_at);
     current user/wake text comes from trigger (no double user line).
+    episode = 本段开头那块「上一段的回忆」（segments.episode_text），段内不变。
     user_id is reserved for future per-user assets; profile/persona are
     single-tenant paths under data_dir today.
     """
@@ -213,6 +235,14 @@ def build_messages(
     prefs = prefs_block()
     if prefs:
         messages.append({"role": "system", "content": prefs})
+
+    # 滚动块（Notion ⑨）：prefs 之后、对话之前。它是重铸那一刻定下的、段内逐字节不变，
+    # 所以和前面的稳定前缀一起被缓存——和每轮都变的召回块不是一回事。
+    episode_clean = (episode or "").strip()
+    if episode_clean:
+        messages.append(
+            {"role": "system", "content": f"{EPISODE_HEADER}\n{episode_clean}"}
+        )
 
     for row in history_rows:
         rendered = _render_dialog_row(row, tz_name)

@@ -47,7 +47,10 @@
   + reason（`llm_502` / `error`）再抛；重启把半路的 pending 扫成 `failed:restart`，
   不替用户重发。重发（`POST /chat/{id}/retry`）**复用那一行**不重插，只许重发最后
   一条。拼装只吃 `done` 的轮次——模型永远看不见没等到回复的句子
-- 降级要留痕：wake 的 `skipped` 带 reason、兜底句记 WARNING，不静默
+- 历史的边界是**会话段**，不是滑动窗口（`app/segments.py`，[SEGMENTS.md](./SEGMENTS.md)）：
+  重铸是段生命周期事件（硬闸轮末 / 回来时缓存已死），不是每轮动作；重铸前 episode 必须新鲜；
+  `segments.*` 入口都假定调用方已持轮锁
+- 降级要留痕：wake 的 `skipped` 带 reason、兜底句记 WARNING、提炼失败不重铸记 WARNING，不静默
 - 日志带轮 id：`[chat-xxxx]` / `[wake-xxxx]`（`app/trace.py`），一轮 grep 一个 id
 - cache usage 日志**已有**：`nostos.llm` INFO 每次调用打 ms / attempts / 整个 usage
 - 一道门：`ACCESS_TOKEN`（`app/auth.py`）。公网链接前必填；tailnet 内可空
