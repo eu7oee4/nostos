@@ -27,7 +27,7 @@ data/memories/<USER_ID>/
 - `intensity`：只有 feel 有，`low` / `mid` / `high` 三档。**这是占位**：实测 deepseek-chat 只会给 mid
   （`eval/README.md` 第三轮），机主 09-14 定三档太粗暴、后面要改，召回端消费 intensity 一起做（落地顺序第 4 步）。
   现在召回端不读这个字段，只在标题里显示
-- 以后检索上线（落地顺序第 3 步）再加 `sha256` 和向量，这一版没有
+- `sha256` 和向量不在这份里，在旁边的 `vectors.json`（见下面「检索」一节）
 
 ## 两种记忆，两个写工具（2026-09-14，Notion ⑫）
 
@@ -43,8 +43,11 @@ data/memories/<USER_ID>/
 选工具就是选 kind。
 
 **风险**：feel 和 prefs_write 是同一种难题，都要在对话中认出「这句属于某个元类别」再停下来
-调工具。事件那路不担心（`memory_write` 对 name / hometown 一次就开火），感受那路可能重演 #9。
-所以有 [`eval/probe_memory_feel.py`](../eval/probe_memory_feel.py) 这根探针，数据在
+调工具。~~事件那路不担心~~ **09-16 真机推翻**：18 轮实习 / 求职的对话一条没记，探针量出来他只对
+**长得像描述例句**的句子开火，改宽例句在留出集上不泛化（三成→三成）。数据在 `eval/README.md`
+「事件探针」。描述已换成覆盖机主真会聊的话题的宽版，但治本得靠 Notion ⑨ 的提炼兜底或换模型，待定。
+所以有 [`eval/probe_memory_feel.py`](../eval/probe_memory_feel.py) 和
+[`eval/probe_item_write.py`](../eval/probe_item_write.py) 两根探针，数据在
 [`eval/README.md`](../eval/README.md)。feel 开火率长期接近零而对话里明明有情绪，兜底的形状
 见 Notion ⑨：提炼时把本段已写的条目列给模型，只补漏掉的。
 
@@ -77,6 +80,65 @@ data/memories/<USER_ID>/
    ```
 3. 预算仍是 6000 字符这个量级，记忆是配菜不是主食。超预算从最旧那头砍。
 4. 写入后下一轮召回就能看见。
+
+## 检索（2026-09-14，落地顺序第 3 步：⑪②⑤⑥⑦⑧）
+
+聊天和 wake 走 `memory/recall.py` 的 `recall()`，不再全量塞入：
+
+1. **query = 当前句 + 最近 3 轮**（`build_query`，上限 1800 字符，超了保头尾）。「今天去接她了」
+   单句很弱，最近几轮聊到妈妈才知道「她」是谁。wake 没当前句，只有最近几轮。
+2. **两路召回**：关键词一路（中文按字二元组、英文按词，分数 = 共有二元组 / sqrt(文档二元组数)，
+   **共有少于 2 个不算命中**）；向量一路（余弦，**两个探针**：当前句单独一个、拼好的 query 一个，
+   每条取高的）。各取前 32。
+3. **RRF 融合**（`1/(60+rank)` 求和，两路都命中的累加），取前 16，再按 6000 字符预算截。
+   不上重排（EverOS 实测 cross-encoder 是负收益）。
+4. 同分（含两路都没命中的）按新的在前——①那条排序退成次序。所以记忆 ≤ 16 条时和原来
+   「全量塞入、新的在前」一样，只是命中的排前面；记忆多起来才有真的取舍。
+5. 每轮一行 `nostos.recall` INFO：`recall memories= kw= vec= selected=[…] top_rrf= top_cos= chars= ms=`；
+   `GET /stats` 的 `recall` 累计多少轮捞到了东西、多少轮走了向量、平均耗时（Notion ⑦）。
+
+**09-14 冒烟踩到的两个坑**（`eval/smoke_recall.py`，8 条记忆、真 bge-m3）：query 带着最近几轮，
+「下午还要去火车站」和「下午三点后不喝咖啡」撞上一个二元组「下午」，RRF 只看名次不看分数，
+咖啡那条被顶到榜首——所以关键词命中要 ≥ 2 个共有二元组。历史也稀释向量：「今天去接她了」单句
+能把「妈妈来杭州」排第一（余弦 0.57），拼上两轮火车站闲话掉到第六——所以向量路两个探针取高的。
+改完：单句 / 带历史两种情况「妈妈来杭州」「和妈妈相处紧张」都在前两位；无关 query（「晚饭吃什么」）
+时命中全空，退成新的在前。8 条记忆一轮 170~290 ms（第一次要把记忆都嵌一遍，800 ms）。
+
+### 向量服务（⑪ 拍板：先接本机 ombre-ollama 的 bge-m3）
+
+DeepSeek 没有 embeddings 接口。本机 cassette 那套 `ombre-ollama` 容器跑着 bge-m3（1024 维，
+纯 CPU，不出网不要 key，返回的向量已归一），直接连它的 `POST /api/embed`，一个 httpx 调用，
+**不加依赖**（没上 numpy，几百条 × 1024 维纯 Python 点积几十毫秒）。
+
+- **宿主机跑 `make run`**：那个容器没对外发端口，起一个只绑 127.0.0.1 的转发容器挂进它的网络：
+  ```bash
+  docker run -d --name nostos-ollama-proxy --restart unless-stopped \
+    --network ombre-cassette-run_default -p 127.0.0.1:11434:11434 \
+    alpine/socat tcp-listen:11434,fork,reuseaddr tcp-connect:ombre-ollama:11434
+  ```
+  `.env` 写 `EMBED_BASE_URL=http://127.0.0.1:11434`。不动 cassette 那边任何容器；不要了 `docker rm -f` 它。
+- **docker compose 跑**：叠 `docker-compose.ombre.yml`（把 nostos 挂进那个网络、指到 `http://ombre-ollama:11434`）。
+- **云端 OpenAI 兼容**（如硅基流动）：`EMBED_API_FORMAT=openai`，base_url 带 `/v1`，模型名写全
+  `BAAI/bge-m3`（Ombre README 记的两个坑）。
+- **留空 = 不做向量**：召回只剩关键词一路 + 新的在前，不炸聊天。服务挂了同样退化，记 WARNING。
+
+代价：容器常驻 2~3 GB 内存；换模型要全量重算。
+
+### 向量缓存与 sha256（②）
+
+`data/memories/<USER_ID>/vectors.json`：`{"signature": "ollama:bge-m3:1024", "vectors": {id: {sha256, vector}}}`。
+**不放进 index.json**——那份人要读、要改，1024 个浮点数一条会把它糊成一坨。md 仍是唯一真源，
+这份可以整个删掉重建。
+
+召回时读缓存，对比每条 md 正文的 sha256，不一致就重嵌那一条写回（用户手改 `hometown.md`
+把杭州改成上海，下次召回向量就是上海的）；签名（api_format:model:dim）不一致整份重算；
+删掉的记忆顺手清掉。不要 watchdog、不要队列。hash 只盖 md 正文，不盖 title / updated_at
+这类审计字段。
+
+### 查重（⑧）
+
+`write_memory` 同 id 覆盖看的是 **md 文件在不在**，不看向量缓存——索引是异步的，索引里没有
+不等于不存在（EverOS 在 agent_skill 上踩过的坑）。
 
 ## 用户出口（Notion ⑩）
 

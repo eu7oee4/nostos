@@ -246,6 +246,9 @@ ngrok http 8787
   `memory_read` / `memory_list` 读。召回新的在前、每条带记下的日期
 - `GET /memories`、`GET /memories/{name}` 可以直接翻；`DELETE /memories/{name}` 删一条，
   网页右上角「记忆」抽屉也能看能删。模型没有删的工具
+- 召回是检索不是全量塞入：query 拼当前句 + 最近 3 轮，关键词 + 向量两路 RRF 融合，每轮一行
+  `nostos.recall` 日志。向量服务可选（`EMBED_BASE_URL`，默认关；本机有 cassette 的 ombre-ollama
+  就能直接用，怎么接见 MIN_MEMORY.md「向量服务」），没有就只剩关键词 + 新的在前
 
 **主动触达**（详见 [MIN_WAKE.md](docs/MIN_WAKE.md)）
 

@@ -1,0 +1,21 @@
+# 用本机 cassette 那套 ombre-ollama（bge-m3）做记忆向量时叠上这份：
+#
+#   docker compose -f docker-compose.yml -f docker-compose.ombre.yml up --build
+#
+# 做的事只有两件：把 nostos 容器挂进 ombre-cassette-run_default 网络，
+# 再把 EMBED_BASE_URL 指到网络内的 ombre-ollama。那个网络得先存在（cassette 的 compose 起过）。
+# 不用 ombre 的机器别叠这份，主 compose 本身不依赖它。
+services:
+  nostos:
+    environment:
+      EMBED_BASE_URL: http://ombre-ollama:11434
+      EMBED_MODEL: bge-m3
+      EMBED_API_FORMAT: ollama
+    networks:
+      - default
+      - ombre
+
+networks:
+  ombre:
+    external: true
+    name: ombre-cassette-run_default

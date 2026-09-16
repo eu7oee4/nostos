@@ -11,6 +11,7 @@ from app.config import settings
 from app import db, segments
 from app.llm import LLMError
 from app.memory import delete_memory, list_memories, read_memory, safe_id
+from app.memory.recall import stats as recall_stats
 from app.prefs import delete_style, list_style, load_wake, save_wake
 from app.push import public_key_b64u
 from app.schedule.policy import random_on
@@ -68,6 +69,7 @@ async def health():
         "model": settings.llm_model,
         "has_key": bool(settings.llm_api_key),
         "memory_count": len(list_memories(settings.user_id)),
+        "embedding": recall_stats()["embedding"],
         "proactive_enabled": settings.proactive_enabled,
         "push_subscriptions": await db.count_push_subscriptions(settings.user_id),
         "pending_wakes": await db.count_pending_wakes(settings.user_id),
@@ -92,6 +94,8 @@ async def stats(days: int = 7, reply_hours: int = 6):
         "memory_count": len(list_memories(settings.user_id)),
         # 会话段 + episode 利用率（Notion ⑦）：提炼了多少、多少真用于重铸、多少白烧
         "segments": await segments.status(settings.user_id),
+        # 召回质量信号（Notion ⑦）：多少轮捞到了东西、多少轮走了向量、平均多慢
+        "recall": recall_stats(),
     }
 
 
