@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     embed_api_format: str = "ollama"
     embed_api_key: str = ""
     embed_timeout_seconds: float = 20.0
+    # ollama 专用：模型在内存里留多久。默认 5m，空闲后第一次嵌入要重新加载（实测 11 秒）。
+    # -1 = 常驻。bge-m3 1.2 GB，和 cassette 共用那个容器，常驻对它也只有好处。
+    embed_keep_alive: str = "-1"
     # 召回：query 拼最近几轮 + 当前句，上限字符；两路各取前 N；融合后取前 K；RRF 常数
     recall_query_turns: int = 3
     recall_query_max_chars: int = 1800

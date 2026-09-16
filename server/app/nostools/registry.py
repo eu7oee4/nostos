@@ -142,15 +142,22 @@ def _bootstrap() -> None:
     registry.register(
         ToolSpec(
             name="memory_write_item",
+            # 例句是唯一的杠杆，而且只对**长得像例句的**句子有效（eval/README.md
+            # 「事件探针」：留出集上改描述前后都是三成）。所以这里堆的是这个用户
+            # 真会说的话——实习 / 方向 / 在投什么——不是通用规则。通用的那步靠兜底。
             description=(
-                "Record a lasting FACT or EVENT about the user: a person, a place, "
-                "a job, a plan, a date, something that happened or will happen. "
-                "Triggers include 「我妈下周来杭州」「我换工作了」「我猫叫团子」"
-                "「下个月去北京出差」「我住在上海」. "
-                "Same id overwrites, so use a short stable id (mom-visit, job, cat). "
-                "This is for facts only — what the user FEELS about it goes to "
-                "memory_write_feel, in a separate call. Not for chit-chat. "
-                "Do not announce that you wrote it."
+                "Record a lasting FACT about the user's life the moment it comes up: where they "
+                "work, study or intern and since when; what they do there; what they are planning, "
+                "applying to or aiming for; people, pets, places, dates, things that happened or "
+                "will happen. Triggers include 「我在滨江一个AI短剧公司实习，刚来一周多」"
+                "「我想往AI产品经理方向做」「在投另一家公司」「在磨简历」「我妈下周来杭州」"
+                "「我换工作了」「我猫叫团子」「我住在上海」. "
+                "It counts even when it is a short answer to YOUR question (你问「在哪实习」"
+                "她答「滨江 一个AI短剧公司」 — record it) and even when said in passing. "
+                "When in doubt, record: a missed fact is gone for good, a redundant one just "
+                "overwrites. Same id overwrites, so use a short stable id (internship, "
+                "career-goal, job-hunt, mom-visit, cat). Facts only — what the user FEELS about "
+                "it goes to memory_write_feel, in a separate call. Do not announce that you wrote it."
             ),
             builtin=True,
             enabled=True,

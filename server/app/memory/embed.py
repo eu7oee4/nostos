@@ -71,9 +71,15 @@ async def embed_texts(texts: list[str]) -> list[list[float]] | None:
                     rows = sorted(data["data"], key=lambda r: r.get("index", 0))
                     vecs = [r["embedding"] for r in rows]
                 else:
+                    # keep_alive：ollama 默认 5 分钟空闲就卸模型，下一次嵌入要重新加载
+                    # （09-16 真机：一轮召回 11 秒，其余 0.5~0.9 秒）。让它常驻。
                     resp = await client.post(
                         f"{base}/api/embed",
-                        json={"model": settings.embed_model, "input": chunk},
+                        json={
+                            "model": settings.embed_model,
+                            "input": chunk,
+                            "keep_alive": settings.embed_keep_alive,
+                        },
                         headers=headers,
                     )
                     resp.raise_for_status()

@@ -27,7 +27,7 @@ data/memories/<USER_ID>/
 - `intensity`：只有 feel 有，`low` / `mid` / `high` 三档。**这是占位**：实测 deepseek-chat 只会给 mid
   （`eval/README.md` 第三轮），机主 09-14 定三档太粗暴、后面要改，召回端消费 intensity 一起做（落地顺序第 4 步）。
   现在召回端不读这个字段，只在标题里显示
-- 以后检索上线（落地顺序第 3 步）再加 `sha256` 和向量，这一版没有
+- `sha256` 和向量不在这份里，在旁边的 `vectors.json`（见下面「检索」一节）
 
 ## 两种记忆，两个写工具（2026-09-14，Notion ⑫）
 
@@ -43,8 +43,11 @@ data/memories/<USER_ID>/
 选工具就是选 kind。
 
 **风险**：feel 和 prefs_write 是同一种难题，都要在对话中认出「这句属于某个元类别」再停下来
-调工具。事件那路不担心（`memory_write` 对 name / hometown 一次就开火），感受那路可能重演 #9。
-所以有 [`eval/probe_memory_feel.py`](../eval/probe_memory_feel.py) 这根探针，数据在
+调工具。~~事件那路不担心~~ **09-16 真机推翻**：18 轮实习 / 求职的对话一条没记，探针量出来他只对
+**长得像描述例句**的句子开火，改宽例句在留出集上不泛化（三成→三成）。数据在 `eval/README.md`
+「事件探针」。描述已换成覆盖机主真会聊的话题的宽版，但治本得靠 Notion ⑨ 的提炼兜底或换模型，待定。
+所以有 [`eval/probe_memory_feel.py`](../eval/probe_memory_feel.py) 和
+[`eval/probe_item_write.py`](../eval/probe_item_write.py) 两根探针，数据在
 [`eval/README.md`](../eval/README.md)。feel 开火率长期接近零而对话里明明有情绪，兜底的形状
 见 Notion ⑨：提炼时把本段已写的条目列给模型，只补漏掉的。
 
